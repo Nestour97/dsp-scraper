@@ -1045,42 +1045,76 @@ def run_scraper():
         print(f"🌍 FULL MODE: scraping {len(all_codes)} countries")
 
     all_rows = []
+    failed_codes = []
+
+    # -------- first pass: parallel scrape --------
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(scrape_country, cc): cc for cc in all_codes}
-        with tqdm(total=len(futures), desc="Scraping countries", unit="cc") as pbar:
-            for fut in as_completed(futures):
-                cc = futures[fut]
-                try:
-                    res = fut.result()
-                    if res:
-                        all_rows.extend(res)
-                except Exception as e:
-                    cn = normalize_country_name(get_country_name_from_code(cc))
-                    log_missing(
-                        cn,
-                        cc,
-                        f"https://www.apple.com/{cc.lower()}/apple-music/",
-                        f"Future exception: {type(e).__name__}",
-                    )
-                finally:
-                    pbar.update(1)
+        for fut in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="Scraping countries",
+            unit="cc",
+        ):
+            cc = futures[fut]
+            try:
+                res = fut.result()
+                if res:
+                    all_rows.extend(res)
+            except Exception as e:
+                failed_codes.append(cc)
+                cn = normalize_country_name(get_country_name_from_code(cc))
+                log_missing(
+                    cn,
+                    cc,
+                    f"https://www.apple.com/{cc.lower()}/apple-music/",
+                    f"Future exception: {type(e).__name__}: {e}",
+                )
 
-    if all_rows:
-        df = pd.DataFrame(all_rows)
-        df["Plan"] = pd.Categorical(df["Plan"], TIER_ORDER, ordered=True)
-        df.sort_values(["Country", "Plan"], inplace=True, ignore_index=True)
+    # -------- second pass: retry failures sequentially --------
+    if failed_codes:
+        print(f"🔁 Retrying {len(failed_codes)} failed countries sequentially…")
+        for cc in failed_codes:
+            try:
+                res = scrape_country(cc)
+                if res:
+                    all_rows.extend(res)
+                    # drop the old “failed” log entries for this cc
+                    MISSING_BUFFER[:] = [
+                        m for m in MISSING_BUFFER if m["country_code"] != cc
+                    ]
+            except Exception as e:
+                cn = normalize_country_name(get_country_name_from_code(cc))
+                log_missing(
+                    cn,
+                    cc,
+                    f"https://www.apple.com/{cc.lower()}/apple-music/",
+                    f"Retry exception: {type(e).__name__}: {e}",
+                )
 
-        # --- FIX: keep only the requested 8 columns
-        cols = [
-            "Country", "Country Code", "Currency",
-            "Currency Raw", "Plan", "Price Display", "Price Value"
-        ]
-        df = df[cols]
-        # --- FIX END
+    if not all_rows:
+        print("⚠️ No rows scraped at all.")
+        return
 
-        out_name = "apple_music_plans_TEST.xlsx" if TEST_MODE else "apple_music_plans_all.xlsx"
-        df.to_excel(out_name, index=False)
-        print(f"✅ Exported to {out_name} (rows={len(df)})")
+    # -------- build final DataFrame --------
+    df = pd.DataFrame(all_rows)
+    df["Plan"] = pd.Categorical(df["Plan"], TIER_ORDER, ordered=True)
+    df.sort_values(["Country", "Plan"], inplace=True, ignore_index=True)
+
+    cols = [
+        "Country",
+        "Country Code",
+        "Currency",
+        "Currency Raw",
+        "Plan",
+        "Price Display",
+        "Price Value",
+    ]
+    df = df[cols]
+
+    out_name = "apple_music_plans_TEST.xlsx" if TEST_MODE else "apple_music_plans_all.xlsx"
+    df.to_excel(out_name, index=False)
+    print(f"✅ Exported to {out_name} (rows={len(df)})")
 
     if MISSING_BUFFER:
         pd.DataFrame(MISSING_BUFFER).to_csv(MISSING_CSV, index=False)
