@@ -19,10 +19,9 @@ SONY_RED_SOFT = "#ff4b5c"
 SONY_TEXT_MUTED = "#c7c7c7"
 
 # Local image paths (you need to add these files to your repo)
-IMG_DIR = Path("images")
-SONY_LOGO_PATH = IMG_DIR / "sony_logo.png"
-APPLE_LOGO_PATH = IMG_DIR / "apple_music_logo.png"
-DISNEY_LOGO_PATH = IMG_DIR / "disney_plus_logo.png"
+SONY_LOGO_PATH = Path("sony_logo.png")
+APPLE_LOGO_PATH = Path("apple_music_logo.png")
+DISNEY_LOGO_PATH = Path("disney_plus_logo.png")
 
 st.set_page_config(
     page_title="DSP Price Scraper",
@@ -378,3 +377,4 @@ with disney_tab:
         )
         if st.button("🚀 Run Disney+ scraper", key="run_disney"):
             run_and_render("Disney+", test_mode=test_mode)
+
