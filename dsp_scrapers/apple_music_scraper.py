@@ -1032,22 +1032,41 @@ def run_currency_tests():
         iso, src = detect_currency_in_text(text, cc)
         print(f"{cc:<3} {name:<13} {text:<35} -> {iso:<4} ({src})")
 
-def run_scraper():
+def run_scraper(country_codes_override=None):
+    """
+    Core Apple Music scraping logic.
+
+    If country_codes_override is given (iterable of ISO-2 codes), only those
+    territories are scraped, regardless of TEST_MODE.
+    """
     init_missing_db()
 
     iso_codes = {c.alpha_2 for c in pycountry.countries}
     all_codes = sorted(iso_codes.union(EXTRA_REGIONS))
 
-    if TEST_MODE:
+    # Decide which territories to scrape
+    if country_codes_override:
+        requested = {
+            (cc or "").strip().upper()
+            for cc in country_codes_override
+            if (cc or "").strip()
+        }
+        requested = {cc for cc in requested if len(cc) == 2}
+        all_codes = sorted(requested)
+        print(f"🎯 Subset mode: scraping {len(all_codes)} countries: {all_codes}")
+    elif TEST_MODE:
         all_codes = sorted({c.upper() for c in TEST_COUNTRIES})
         print(f"🧪 TEST MODE: scraping {len(all_codes)} countries: {all_codes}")
     else:
         print(f"🌍 FULL MODE: scraping {len(all_codes)} countries")
 
+    if not all_codes:
+        print("⚠️ No country codes to scrape.")
+        return
+
     all_rows = []
     failed_codes = []
 
-    # -------- first pass: parallel scrape --------
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(scrape_country, cc): cc for cc in all_codes}
         for fut in tqdm(
@@ -1071,7 +1090,7 @@ def run_scraper():
                     f"Future exception: {type(e).__name__}: {e}",
                 )
 
-    # -------- second pass: retry failures sequentially --------
+    # Second pass: retry failures sequentially (less chance of rate limiting)
     if failed_codes:
         print(f"🔁 Retrying {len(failed_codes)} failed countries sequentially…")
         for cc in failed_codes:
@@ -1079,9 +1098,9 @@ def run_scraper():
                 res = scrape_country(cc)
                 if res:
                     all_rows.extend(res)
-                    # drop the old “failed” log entries for this cc
+                    # drop previous missing-log entries for this cc
                     MISSING_BUFFER[:] = [
-                        m for m in MISSING_BUFFER if m["country_code"] != cc
+                        m for m in MISSING_BUFFER if m.get("country_code") != cc
                     ]
             except Exception as e:
                 cn = normalize_country_name(get_country_name_from_code(cc))
@@ -1096,7 +1115,6 @@ def run_scraper():
         print("⚠️ No rows scraped at all.")
         return
 
-    # -------- build final DataFrame --------
     df = pd.DataFrame(all_rows)
     df["Plan"] = pd.Categorical(df["Plan"], TIER_ORDER, ordered=True)
     df.sort_values(["Country", "Plan"], inplace=True, ignore_index=True)
@@ -1112,7 +1130,12 @@ def run_scraper():
     ]
     df = df[cols]
 
-    out_name = "apple_music_plans_TEST.xlsx" if TEST_MODE else "apple_music_plans_all.xlsx"
+    # Name file depending on full vs test/subset
+    out_name = (
+        "apple_music_plans_TEST.xlsx"
+        if (TEST_MODE or country_codes_override)
+        else "apple_music_plans_all.xlsx"
+    )
     df.to_excel(out_name, index=False)
     print(f"✅ Exported to {out_name} (rows={len(df)})")
 
@@ -1120,25 +1143,34 @@ def run_scraper():
         pd.DataFrame(MISSING_BUFFER).to_csv(MISSING_CSV, index=False)
         print(f"⚠️ Logged {len(MISSING_BUFFER)} issues to {MISSING_CSV} / {MISSING_DB}")
 
+    return out_name
 
-def run_apple_music_scraper(test_mode=True):
+
+def run_apple_music_scraper(test_mode=True, country_codes=None):
     """
     Wrapper used by the web app.
 
     test_mode = True  -> behaves like your TEST_MODE run
     test_mode = False -> full all-countries run
 
-    Returns: path to the Excel file that was created.
+    If country_codes is provided (list of ISO-2 codes), only those countries
+    are scraped (regardless of test_mode).
     """
     global TEST_MODE
     TEST_MODE = bool(test_mode)
 
     start = time.time()
-    run_scraper()
+    out_name = run_scraper(country_codes_override=country_codes)
     print(f"[APPLE MUSIC] Finished in {round(time.time() - start, 2)}s")
 
-    out_name = "apple_music_plans_TEST.xlsx" if TEST_MODE else "apple_music_plans_all.xlsx"
     return out_name
+
+
+if __name__ == "__main__":
+    run_currency_tests()
+    start = time.time()
+    run_scraper()
+    print(f"⏱️ Finished in {round(time.time() - start, 2)}s")
 
 if __name__ == "__main__":
     run_currency_tests()
