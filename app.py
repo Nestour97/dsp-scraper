@@ -119,14 +119,13 @@ def run_and_render(dsp_name: str, test_mode: bool):
     """
     Wrapper used by the UI. Handles:
     - optional Playwright setup (Disney+)
-    - 3-step progress bar
+    - simple % progress bar
     - Excel → DataFrame → grid
     """
     if dsp_name not in DSP_OPTIONS:
         st.error(f"Unknown DSP: {dsp_name}")
         return
 
-    # Disney+ needs a browser
     if dsp_name == "Disney+":
         ensure_playwright_for_disney()
 
@@ -134,46 +133,39 @@ def run_and_render(dsp_name: str, test_mode: bool):
     progress = st.progress(0)
     status = st.empty()
 
-    # Phase 1 – boot
-    progress.progress(10)
-    status.markdown("Booting scraper…")
+    def update(pct: int, msg: str):
+        progress.progress(pct)
+        status.markdown(f"**{pct}%** &nbsp; {msg}")
+
+    # 0–20%: boot
+    update(5, "Booting scraper…")
+    update(20, "Preparing HTTP session and country list…")
 
     try:
-        # Phase 2 – main scraping
-        progress.progress(35)
-        status.markdown(
-            "Scraping prices… this can take a few minutes in **Full** mode."
-        )
+        # 20–80%: main scraping (we can't see inside, so just show a generic phase)
+        update(40, "Scraping prices… this can take a few minutes in **Full** mode.")
         excel_path = run_scraper(dsp_name, test_mode=test_mode)
 
-        # Phase 3 – load results
-        progress.progress(70)
-        status.markdown("Loading results into the data explorer…")
-
+        # 80–100%: load + render
+        update(85, "Loading results into the data explorer…")
         df = load_excel_as_df(excel_path)
 
-        progress.progress(100)
-        status.markdown(
-            f"✅ Finished! Scraped **{len(df):,} rows** for **{dsp_name}**."
-        )
-
+        update(100, f"Finished! Scraped **{len(df):,} rows** for **{dsp_name}**.")
         render_powerbi_grid(df, excel_path)
 
-        # Optional: show Apple Music "missing countries" log if present
         if dsp_name == "Apple Music":
             missing_csv = Path("apple_music_missing.csv")
             if missing_csv.exists():
                 try:
                     miss_df = pd.read_csv(missing_csv)
-                    with st.expander(
-                        "Apple Music – countries that failed (debug log)"
-                    ):
+                    with st.expander("Apple Music – countries that failed (debug log)"):
                         st.dataframe(miss_df)
                 except Exception:
                     pass
 
     except Exception as e:
         nice_error_box(e)
+
 
 
 def logo_or_title(path: Path, fallback_title: str, width: int = 140):
@@ -377,4 +369,5 @@ with disney_tab:
         )
         if st.button("🚀 Run Disney+ scraper", key="run_disney"):
             run_and_render("Disney+", test_mode=test_mode)
+
 
