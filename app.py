@@ -1,27 +1,19 @@
 import os
 import sys
+import time
 import subprocess
+from datetime import datetime
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
+import pycountry
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 from dsp_scrapers import DSP_OPTIONS, run_scraper
 
-# ---------- GLOBAL CONFIG ----------
-
-SONY_BG = "#050505"
-SONY_PANEL = "#0b0b0b"
-SONY_CARD = "#151515"
-SONY_RED = "#e31c23"
-SONY_RED_SOFT = "#ff4b5c"
-SONY_TEXT_MUTED = "#c7c7c7"
-
-# Local image paths (you need to add these files to your repo)
-SONY_LOGO_PATH = Path("sony_logo.png")
-APPLE_LOGO_PATH = Path("apple_music_logo.png")
-DISNEY_LOGO_PATH = Path("disney_plus_logo.png")
+# ---------- PAGE CONFIG ----------
 
 st.set_page_config(
     page_title="DSP Price Scraper",
@@ -29,19 +21,83 @@ st.set_page_config(
     layout="wide",
 )
 
+# ---------- CONSTANTS / PATHS ----------
+
+SONY_LOGO_PATH = Path("sony_logo.png")
+APPLE_LOGO_PATH = Path("apple_music_logo.png")
+DISNEY_LOGO_PATH = Path("disney_plus_logo.png")
+
+# Build list of country options once (for Test mode)
+COUNTRY_LABELS = []
+LABEL_TO_CODE = {}
+for c in pycountry.countries:
+    code = c.alpha_2
+    name = c.name
+    label = f"{name} ({code})"
+    COUNTRY_LABELS.append(label)
+    LABEL_TO_CODE[label] = code
+COUNTRY_LABELS.sort()
+
+# Session state store for cached results
+if "results" not in st.session_state:
+    st.session_state["results"] = {}
+
+
+def _result_key(dsp_name: str, mode_label: str, codes: list[str]) -> str:
+    """Stable key for cached results."""
+    codes_part = ",".join(sorted(codes)) if codes else "ALL"
+    return f"{dsp_name}::{mode_label}::{codes_part}"
+
+
+# ---------- BASIC STYLING ----------
+
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding-top: 1.4rem;
+        padding-bottom: 2rem;
+    }
+    .section-card {
+        background-color: #0b0b0b;
+        color: #f3f3f3;
+        border-radius: 14px;
+        padding: 1rem 1.3rem;
+        border: 1px solid #202020;
+    }
+    .section-card ul {
+        margin-top: 0.4rem;
+        margin-bottom: 0;
+    }
+    .section-muted {
+        color: #777777;
+        font-size: 0.88rem;
+    }
+    .run-button button {
+        border-radius: 999px !important;
+        padding: 0.4rem 1.2rem !important;
+        font-weight: 600 !important;
+    }
+    .ag-theme-streamlit .ag-root-wrapper {
+        border-radius: 12px;
+        border: 1px solid #dddddd;
+    }
+    .ag-theme-streamlit .ag-header {
+        font-weight: 600;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # ---------- UTILITIES ----------
 
 
-def ensure_playwright_for_disney():
-    """
-    Make sure Playwright's Chromium browser is installed.
-    Safe to call multiple times; it will just be a no-op if already installed.
-    """
-    if st.session_state.get("playwright_ready", False):
+def ensure_playwright_for_disney() -> None:
+    """Install Playwright Chromium browser if needed (no-op once done)."""
+    if st.session_state.get("playwright_ready"):
         return
-
     try:
-        # Use `python -m playwright install chromium` to avoid PATH issues
         subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
             check=True,
@@ -52,8 +108,8 @@ def ensure_playwright_for_disney():
     except Exception as e:
         st.warning(
             "Could not auto-install Playwright browsers. "
-            "Disney+ scraping may fail until Chromium is installed.\n\n"
-            f"Technical detail: {e}"
+            "Disney+ scraping may fail until Chromium is installed. "
+            f"Details: {e}"
         )
 
 
@@ -65,45 +121,42 @@ def load_excel_as_df(excel_path: str) -> pd.DataFrame:
 
 
 def render_powerbi_grid(df: pd.DataFrame, excel_path: str) -> None:
-    st.subheader("📊 Data explorer (Power BI–style)")
+    st.subheader("Data explorer (Power BI–style)")
 
-    with st.container():
-        gb = GridOptionsBuilder.from_dataframe(df)
-        gb.configure_default_column(
-            sortable=True,
-            filter=True,
-            resizable=True,
-        )
-        gb.configure_pagination(
-            enabled=True,
-            paginationAutoPageSize=False,
-            paginationPageSize=50,
-        )
-        gb.configure_side_bar()
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(
+        sortable=True,
+        filter=True,
+        resizable=True,
+    )
+    gb.configure_pagination(
+        enabled=True,
+        paginationAutoPageSize=False,
+        paginationPageSize=50,
+    )
+    gb.configure_side_bar()
+    grid_options = gb.build()
 
-        grid_options = gb.build()
+    AgGrid(
+        df,
+        gridOptions=grid_options,
+        update_mode=GridUpdateMode.NO_UPDATE,
+        theme="streamlit",
+        height=600,
+        fit_columns_on_grid_load=True,
+    )
 
-        AgGrid(
-            df,
-            gridOptions=grid_options,
-            update_mode=GridUpdateMode.NO_UPDATE,
-            theme="streamlit",
-            height=700,  # bigger table
-            fit_columns_on_grid_load=True,
-        )
-
-        # Download button under the table
-        with open(excel_path, "rb") as f:
-            data = f.read()
-        st.download_button(
-            "📥 Download full Excel file",
-            data=data,
-            file_name=os.path.basename(excel_path),
-            mime=(
-                "application/vnd.openxmlformats-officedocument."
-                "spreadsheetml.sheet"
-            ),
-        )
+    with open(excel_path, "rb") as f:
+        data = f.read()
+    st.download_button(
+        "📥 Download full Excel file",
+        data=data,
+        file_name=os.path.basename(excel_path),
+        mime=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )
 
 
 def nice_error_box(err: Exception) -> None:
@@ -111,204 +164,158 @@ def nice_error_box(err: Exception) -> None:
         "An error occurred while running the scraper:\n\n"
         f"`{type(err).__name__}: {err}`"
     )
-    with st.expander("Show full traceback / debug info"):
+    with st.expander("Show full traceback"):
         st.exception(err)
 
 
-def run_and_render(dsp_name: str, test_mode: bool):
+def run_and_render(dsp_name: str, mode_label: str, selected_codes: list[str]):
     """
-    Wrapper used by the UI. Handles:
-    - optional Playwright setup (Disney+)
-    - simple % progress bar
-    - Excel → DataFrame → grid
+    Run scraper in a background thread and show a smooth, continuous
+    progress bar. Also caches results in session_state.
     """
-    if dsp_name not in DSP_OPTIONS:
-        st.error(f"Unknown DSP: {dsp_name}")
-        return
+    test_mode = mode_label.startswith("Test")
+    key = _result_key(dsp_name, mode_label, selected_codes)
 
     if dsp_name == "Disney+":
         ensure_playwright_for_disney()
 
-    st.markdown("### 🚀 Run status")
+    st.markdown("### Run status")
     progress = st.progress(0)
     status = st.empty()
 
-    def update(pct: int, msg: str):
-        progress.progress(pct)
-        status.markdown(f"**{pct}%** &nbsp; {msg}")
+    def _scrape():
+        # run_scraper is from dsp_scrapers.__init__
+        return run_scraper(dsp_name, test_mode, selected_codes)
 
-    # 0–20%: boot
-    update(5, "Booting scraper…")
-    update(20, "Preparing HTTP session and country list…")
+    # Run scraper in a worker thread and animate the bar in this thread
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(_scrape)
+        pct = 0
+        with st.spinner(f"Running {dsp_name} scraper…"):
+            while not future.done():
+                pct = min(pct + 2, 95)
+                progress.progress(pct)
+                status.markdown(
+                    f"<b>{pct}%</b> – scraping {dsp_name}…",
+                    unsafe_allow_html=True,
+                )
+                time.sleep(0.20)
 
-    try:
-        # 20–80%: main scraping (we can't see inside, so just show a generic phase)
-        update(40, "Scraping prices… this can take a few minutes in **Full** mode.")
-        excel_path = run_scraper(dsp_name, test_mode=test_mode)
+        try:
+            excel_path = future.result()
+        except Exception as e:
+            progress.progress(0)
+            nice_error_box(e)
+            return
 
-        # 80–100%: load + render
-        update(85, "Loading results into the data explorer…")
-        df = load_excel_as_df(excel_path)
+    # Finalise progress
+    progress.progress(100)
+    status.markdown(
+        f"<b>100%</b> – finished {dsp_name} scrape.",
+        unsafe_allow_html=True,
+    )
 
-        update(100, f"Finished! Scraped **{len(df):,} rows** for **{dsp_name}**.")
-        render_powerbi_grid(df, excel_path)
+    # Load and cache
+    df = load_excel_as_df(excel_path)
+    rows = len(df)
 
-        if dsp_name == "Apple Music":
-            missing_csv = Path("apple_music_missing.csv")
-            if missing_csv.exists():
-                try:
-                    miss_df = pd.read_csv(missing_csv)
-                    with st.expander("Apple Music – countries that failed (debug log)"):
-                        st.dataframe(miss_df)
-                except Exception:
-                    pass
+    st.session_state["results"][key] = {
+        "df": df,
+        "excel": excel_path,
+        "rows": rows,
+        "ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
 
-    except Exception as e:
-        nice_error_box(e)
+    st.success(f"Scraped {rows:,} rows for {dsp_name}.")
+    render_powerbi_grid(df, excel_path)
+
+    # Apple-specific debug log if present
+    if dsp_name == "Apple Music":
+        missing_csv = Path("apple_music_missing.csv")
+        if missing_csv.exists():
+            try:
+                miss_df = pd.read_csv(missing_csv)
+                with st.expander("Apple Music – countries that failed (debug log)"):
+                    st.dataframe(miss_df)
+            except Exception:
+                pass
 
 
+def show_cached_result(dsp_name: str, mode_label: str, selected_codes: list[str]):
+    key = _result_key(dsp_name, mode_label, selected_codes)
+    cached = st.session_state["results"].get(key)
+    if not cached:
+        return
 
-def logo_or_title(path: Path, fallback_title: str, width: int = 140):
-    """
-    Helper: show an image if it exists, otherwise just show the title text.
-    """
+    st.caption(
+        f"Showing last run for **{dsp_name}** "
+        f"({cached['rows']:,} rows, scraped at {cached['ts']})."
+    )
+    render_powerbi_grid(cached["df"], cached["excel"])
+
+
+def logo(path: Path, width: int, alt: str):
     if path.is_file():
         st.image(str(path), width=width)
     else:
-        st.markdown(f"### {fallback_title}")
+        st.markdown(f"**{alt}**")
 
 
-# ---------- SONY SKIN / CSS ----------
-
-st.markdown(
-    f"""
-    <style>
-    body {{
-        background-color: {SONY_BG};
-    }}
-    .block-container {{
-        padding-top: 1.2rem;
-        padding-bottom: 1.5rem;
-    }}
-    .sony-card {{
-        background: radial-gradient(circle at 0 0, #222 0, {SONY_CARD} 40%, {SONY_BG} 100%);
-        border-radius: 22px;
-        padding: 1.6rem 1.8rem;
-        border: 1px solid #222;
-        box-shadow: 0 22px 60px rgba(0,0,0,0.85);
-    }}
-    .sony-panel {{
-        background: {SONY_PANEL};
-        border-radius: 18px;
-        padding: 1.2rem 1.4rem;
-        border: 1px solid #222;
-    }}
-    .sony-pill {{
-        display: inline-flex;
-        align-items: center;
-        gap: 0.45rem;
-        background: linear-gradient(135deg, {SONY_RED_SOFT}, {SONY_RED});
-        color: #fff;
-        padding: 0.35rem 0.85rem;
-        border-radius: 999px;
-        font-size: 0.78rem;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-    }}
-    .small-text {{
-        font-size: 0.85rem;
-        color: {SONY_TEXT_MUTED};
-    }}
-    .ag-theme-streamlit .ag-root-wrapper {{
-        border-radius: 18px;
-        border: 1px solid #333;
-    }}
-    .ag-theme-streamlit .ag-header {{
-        background: #101010;
-        color: #f5f5f5;
-        font-weight: 600;
-    }}
-    .ag-theme-streamlit .ag-row-even {{
-        background-color: #101010;
-    }}
-    .ag-theme-streamlit .ag-row-odd {{
-        background-color: #0a0a0a;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ---------- SIDEBAR ----------
+# ---------- SIDEBAR (global options) ----------
 
 with st.sidebar:
-    st.markdown("## ⚙️ Scraper Options")
+    st.header("Scraper options")
 
-    st.markdown(
-        "Pick the mode once, then run the scraper from the tab you care about."
-    )
     mode_label = st.radio(
         "Mode",
-        ["Test (quick run)", "Full (all countries)"],
-        index=0,
+        ["Full (all countries)", "Test (choose countries)"],
         help=(
-            "Test: only a small subset of countries. "
-            "Full: everything, but slower."
+            "Full: run every available country. "
+            "Test: choose a subset of countries to scrape."
         ),
+        index=0,
     )
-    test_mode = mode_label.startswith("Test")
 
-    st.markdown("---")
+    selected_codes: list[str] = []
+    if mode_label.startswith("Test"):
+        selected_labels = st.multiselect(
+            "Countries for test runs",
+            COUNTRY_LABELS,
+            help=(
+                "Start typing a country name, then pick as many as you like. "
+                "This custom selection currently applies to Apple Music."
+            ),
+        )
+        selected_codes = [LABEL_TO_CODE[l] for l in selected_labels]
+
     st.markdown(
-        "<span class='small-text'>For now, Apple Music and Disney+ "
-        "always run their built-in global logic.</span>",
+        "<p class='section-muted'>"
+        "Results stay on screen after a run. "
+        "Switch between tabs to compare DSPs.</p>",
         unsafe_allow_html=True,
     )
 
 # ---------- HEADER ----------
 
-header_col1, header_col2, header_col3 = st.columns([0.9, 4, 1.4])
+col1, col2, col3 = st.columns([1.2, 3, 1])
 
-with header_col1:
+with col1:
+    st.markdown("### DSP Price Scraper")
     st.markdown(
-        """
-        <div style="
-            width: 52px; height: 52px;
-            border-radius: 999px;
-            background: radial-gradient(circle at 30% 30%, #ffffff, #ff8a9b);
-            display:flex; align-items:center; justify-content:center;
-            font-weight:800; color:#000;
-            box-shadow: 0 0 22px rgba(255, 76, 91, 0.9);
-        ">
-            D
-        </div>
-        """,
+        "<p class='section-muted'>Central hub for your global DSP pricing.</p>",
         unsafe_allow_html=True,
     )
 
-with header_col2:
-    st.markdown(
-        """
-        <div>
-            <div class="sony-pill">Sony-style DSP command centre</div>
-            <h1 style="margin-top:0.6rem; margin-bottom:0.2rem;">DSP Price Scraper</h1>
-            <p class="small-text">
-                Central hub for your global DSP pricing extraction.
-                Run Apple Music or Disney+ in one click, then explore the results
-                in a Power BI-style grid or download to Excel.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+with col2:
+    st.write("")
 
-with header_col3:
+with col3:
     if SONY_LOGO_PATH.is_file():
-        st.image(str(SONY_LOGO_PATH), caption="Sony-flavoured UI", use_column_width=True)
+        st.image(str(SONY_LOGO_PATH), width=140, caption="Sony-flavoured UI")
     else:
         st.markdown(
-            "<p style='text-align:right; color:#777;'>"
-            "Add <code>images/sony_logo.png</code> to show the Sony logo here."
+            "<p style='text-align:right; font-size:0.85rem; color:#777;'>"
+            "Add <code>sony_logo.png</code> in the repo root to show the logo here."
             "</p>",
             unsafe_allow_html=True,
         )
@@ -316,12 +323,12 @@ with header_col3:
 st.markdown("")
 st.markdown(
     """
-    <div class="sony-panel">
+    <div class="section-card">
         <b>How it works</b>
-        <ul class="small-text">
+        <ul>
             <li>Select <b>Apple Music</b> or <b>Disney+</b> in the tabs below.</li>
-            <li>Pick <b>Test</b> for a quick smoke-test, or <b>Full</b> for all countries.</li>
-            <li>Hit <b>Run scraper</b> to launch the existing Python code.</li>
+            <li>Pick <b>Full</b> for all countries, or <b>Test</b> to choose a subset.</li>
+            <li>Hit <b>Run scraper</b> to launch the underlying Python code.</li>
             <li>Explore the results in the interactive table (sort, filter, search).</li>
             <li>Download the full Excel extract with one click.</li>
         </ul>
@@ -330,44 +337,51 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown("")
-st.markdown("## 🎛️ Choose your DSP")
+st.markdown("## Choose your DSP")
 
 # ---------- MAIN TABS ----------
 
-apple_tab, disney_tab = st.tabs(
-    [
-        " Apple Music",
-        "Disney+",
-    ]
-)
+apple_tab, disney_tab = st.tabs(["Apple Music", "Disney+"])
 
 with apple_tab:
-    col_logo, col_body = st.columns([1, 4])
-
-    with col_logo:
-        logo_or_title(APPLE_LOGO_PATH, "Apple Music")
-
-    with col_body:
+    top_col1, top_col2 = st.columns([1, 4])
+    with top_col1:
+        logo(APPLE_LOGO_PATH, width=80, alt="Apple Music")
+    with top_col2:
+        st.markdown("### Apple Music pricing")
         st.markdown(
-            "### Apple Music pricing\n"
             "Scrape global Apple Music plan prices, currencies and country codes."
         )
-        if st.button("🚀 Run Apple Music scraper", key="run_apple"):
-            run_and_render("Apple Music", test_mode=test_mode)
+
+    run_button = st.button(
+        "Run Apple Music scraper",
+        key="run_apple",
+        help="Launch Apple Music scraper",
+    )
+
+    if run_button:
+        run_and_render("Apple Music", mode_label, selected_codes)
+    else:
+        # If we have previous results matching the current settings, show them
+        show_cached_result("Apple Music", mode_label, selected_codes)
 
 with disney_tab:
-    col_logo, col_body = st.columns([1, 4])
-
-    with col_logo:
-        logo_or_title(DISNEY_LOGO_PATH, "Disney+")
-
-    with col_body:
+    top_col1, top_col2 = st.columns([1, 4])
+    with top_col1:
+        logo(DISNEY_LOGO_PATH, width=90, alt="Disney+")
+    with top_col2:
+        st.markdown("### Disney+ pricing")
         st.markdown(
-            "### Disney+ pricing\n"
             "Scrape global Disney+ subscription prices using the Playwright-powered scraper."
         )
-        if st.button("🚀 Run Disney+ scraper", key="run_disney"):
-            run_and_render("Disney+", test_mode=test_mode)
 
+    run_button = st.button(
+        "Run Disney+ scraper",
+        key="run_disney",
+        help="Launch Disney+ scraper",
+    )
 
+    if run_button:
+        run_and_render("Disney+", mode_label, selected_codes)
+    else:
+        show_cached_result("Disney+", mode_label, selected_codes)
