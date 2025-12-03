@@ -24,7 +24,7 @@ from functools import lru_cache
 
 # =========================== Config ===========================
 
-MAX_WORKERS = 14
+MAX_WORKERS = 6
 
 # Robust session
 SESSION = requests.Session()
