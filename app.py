@@ -10,6 +10,22 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 from dsp_scrapers import run_scraper
 
+import pycountry
+
+# Build a list like "Afghanistan (AF)", "Albania (AL)", ...
+COUNTRY_OPTIONS = sorted(
+    [f"{c.name} ({c.alpha_2})" for c in pycountry.countries],
+    key=str.lower,
+)
+
+def _extract_alpha2(selection):
+    """Turn ['France (FR)', 'Japan (JP)'] into ['FR', 'JP']."""
+    codes = []
+    for item in selection:
+        if "(" in item and ")" in item:
+            codes.append(item.split("(")[-1].strip(") ").upper())
+    return codes
+
 SONY_RED = "#e31c23"
 
 # ---------- PAGE CONFIG ----------
@@ -438,4 +454,5 @@ if last_result and last_result.get("excel_path"):
     )
 else:
     st.info("Run a scraper from the tabs above to see the results here.")
+
 
