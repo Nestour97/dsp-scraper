@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
-from dsp_scrapers import DSP_OPTIONS, run_scraper  # your unified scraper
+from dsp_scrapers import DSP_OPTIONS, run_scraper  # unified scraper
 
 # ---------- PAGE CONFIG ----------
 
@@ -55,74 +55,67 @@ def result_key(dsp_name: str, mode_label: str, country_codes: list[str]) -> str:
     return f"{dsp_name}::{mode_label}::{codes_part}"
 
 
-# ---------- STYLE (centered logo + animated hero) ----------
+# ---------- GLOBAL STYLES (full-width black Sony look) ----------
 
 st.markdown(
     """
     <style>
     body {
-        background-color: #050509;
+        background-color: #000000;
+        color: #f5f5f5;
     }
     .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
-        max-width: 1200px;
+        padding-top: 1.4rem;
+        padding-bottom: 2.4rem;
+        padding-left: 3rem;
+        padding-right: 3rem;
+        max-width: 100%;
     }
 
-    /* animated gradient behind header */
-    @keyframes heroGradient {
-        0%   { background-position: 0% 50%; }
-        50%  { background-position: 100% 50%; }
-        100% { background-position: 0% 50%; }
-    }
-
+    /* HEADER */
     .header-wrapper {
         text-align: center;
-        margin-bottom: 1.4rem;
-        padding: 1.2rem 1.4rem 1.3rem 1.4rem;
-        border-radius: 20px;
-        border: 1px solid #24263b;
-        background: linear-gradient(120deg, #101021, #1a0f3a, #101021);
-        background-size: 200% 200%;
-        animation: heroGradient 18s ease-in-out infinite;
-        box-shadow: 0 22px 50px rgba(0,0,0,0.85);
+        margin-bottom: 1.6rem;
     }
     .header-pill {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        padding: 0.16rem 0.75rem;
+        padding: 0.18rem 0.8rem;
         border-radius: 999px;
         font-size: 0.78rem;
-        background: rgba(0,0,0,0.25);
-        color: #f5f5ff;
+        background: #e31c23;
+        color: #ffffff;
         text-transform: uppercase;
-        letter-spacing: 0.06em;
-        margin-bottom: 0.4rem;
+        letter-spacing: 0.08em;
+        margin-top: 0.45rem;
+        margin-bottom: 0.5rem;
     }
     .header-title {
-        font-size: 2.1rem;
-        font-weight: 700;
-        letter-spacing: 0.03em;
+        font-size: 2.3rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
         margin-bottom: 0.25rem;
         color: #ffffff;
     }
     .header-subtitle {
         font-size: 0.96rem;
-        color: #cbcbea;
-        max-width: 680px;
+        color: #d5d5d5;
+        max-width: 800px;
         margin: 0.1rem auto 0 auto;
     }
+
+    /* SECTIONS */
     .how-card {
-        background-color: #06060b;
-        border-radius: 16px;
-        padding: 0.85rem 1.1rem;
-        border: 1px solid #27283b;
+        background-color: #050505;
+        border-radius: 0.8rem;
+        padding: 0.9rem 1.2rem;
+        border: 1px solid #2a2a2a;
         color: #f3f3f3;
-        margin-bottom: 1rem;
+        margin-bottom: 1.0rem;
     }
     .how-card ul {
-        margin-top: 0.3rem;
+        margin-top: 0.35rem;
         margin-bottom: 0;
         padding-left: 1.1rem;
     }
@@ -132,34 +125,36 @@ st.markdown(
     .section-heading {
         font-size: 1.25rem;
         font-weight: 600;
-        margin-top: 0.7rem;
-        margin-bottom: 0.35rem;
-        color: #f5f5ff;
+        margin-top: 0.8rem;
+        margin-bottom: 0.4rem;
+        color: #ffffff;
     }
     .side-note {
         font-size: 0.86rem;
-        color: #b4b4c8;
+        color: #bfbfbf;
     }
 
+    /* GRID */
     .ag-theme-streamlit .ag-root-wrapper {
-        border-radius: 14px;
-        border: 1px solid #444659;
+        border-radius: 0.7rem;
+        border: 1px solid #444444;
     }
     .ag-theme-streamlit .ag-header {
-        background: #0b0c14;
-        color: #f1f1ff;
+        background: #111111;
+        color: #fafafa;
         font-weight: 600;
     }
     .ag-theme-streamlit .ag-row-even {
-        background-color: #070710;
+        background-color: #050505;
     }
     .ag-theme-streamlit .ag-row-odd {
-        background-color: #05050b;
+        background-color: #020202;
     }
 
+    /* BUTTONS */
     .run-button button {
         border-radius: 999px !important;
-        background: linear-gradient(135deg, #7f5af0, #ff6bcb) !important;
+        background: #e31c23 !important;
         border: none !important;
         color: white !important;
         font-weight: 600 !important;
@@ -169,7 +164,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---------- UTILS ----------
+# ---------- UTILITIES ----------
 
 
 def ensure_playwright_for_disney() -> None:
@@ -327,8 +322,8 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
 
                 progress.progress(pct_est)
                 status.markdown(
-                    f"**{pct_est}%** • Elapsed {format_mm_ss(elapsed)} "
-                    f"• Est. remaining {format_mm_ss(remaining_est)}",
+                    f"**{pct_est}%** · Elapsed {format_mm_ss(elapsed)} "
+                    f"· Est. remaining {format_mm_ss(remaining_est)}",
                     unsafe_allow_html=True,
                 )
                 time.sleep(0.35)
@@ -344,7 +339,7 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
     elapsed = time.time() - start
     progress.progress(100)
     status.markdown(
-        f"**100%** • Elapsed {format_mm_ss(elapsed)} • Est. remaining 00:00",
+        f"**100%** · Elapsed {format_mm_ss(elapsed)} · Est. remaining 00:00",
         unsafe_allow_html=True,
     )
 
@@ -372,7 +367,7 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
                 pass
 
 
-# ---------- SIDEBAR (mode + ONE search/multiselect) ----------
+# ---------- SIDEBAR (mode + multiselect) ----------
 
 with st.sidebar:
     st.markdown("### Mode")
@@ -388,14 +383,12 @@ with st.sidebar:
 
     if mode_label.startswith("Test"):
         st.markdown("#### Countries for test runs")
-
-        # single multiselect with built-in search – type to search, select, keep typing
         selected_labels = st.multiselect(
             "Start typing a country name or code",
             COUNTRY_LABELS,
             help=(
-                "Type to filter the list, press Enter or click to add. "
-                "You can keep typing to add multiple countries."
+                "Click once, then type to search. "
+                "Press Enter or click to add, and keep typing to add more."
             ),
         )
         selected_codes = [LABEL_TO_CODE[l] for l in selected_labels]
@@ -411,7 +404,7 @@ with st.sidebar:
 logo_row = st.columns([1, 1, 1])
 with logo_row[1]:
     if SONY_LOGO_PATH.is_file():
-        st.image(str(SONY_LOGO_PATH), width=120)
+        st.image(str(SONY_LOGO_PATH), width=130)
 
 st.markdown(
     """
