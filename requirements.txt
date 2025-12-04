@@ -12,4 +12,4 @@ unidecode
 streamlit-aggrid
 babel
 googletrans
-
+forex_python
