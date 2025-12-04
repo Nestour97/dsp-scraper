@@ -1,55 +1,56 @@
-from typing import Iterable, List, Optional
+# dsp_scrapers/__init__.py
 
 from .apple_music_scraper import run_apple_music_scraper
 from .disney_plus_scraper import run_disney_scraper
+from .icloud_plus_scraper import run_icloud_plus_scraper
+from .spotify_scraper import run_spotify_scraper
+from .netflix_scraper import run_netflix_scraper
 
+# Leaf scrapers (what the app can actually run)
 DSP_OPTIONS = {
-    "Apple Music": "apple",
+    "Apple Music": "apple_music",
+    "iCloud+": "icloud_plus",
+    "Spotify": "spotify",
+    "Netflix": "netflix",
     "Disney+": "disney",
-    # later you can add Spotify, Netflix, etc.
+}
+
+# High-level groups for the UI (so iCloud+ sits under Apple)
+DSP_GROUPS = {
+    "Apple": ["Apple Music", "iCloud+"],
+    "Spotify": ["Spotify"],
+    "Netflix": ["Netflix"],
+    "Disney+": ["Disney+"],
 }
 
 
-def run_scraper(
-    dsp_name: str,
-    test_mode: bool,
-    country_codes: Optional[Iterable[str]] = None,
-):
+def run_scraper(dsp_name: str, test_mode: bool):
     """
-    Unified function the web app will call.
+    Unified entry point that the Streamlit app calls.
 
-    dsp_name: 'Apple Music' or 'Disney+'
-    test_mode: True  -> test / quick mode
-               False -> full mode
-    country_codes: optional iterable of ISO-2 country codes for subset runs.
-                   Currently used by Apple Music only.
-    Returns: path to Excel file created.
+    dsp_name: one of DSP_OPTIONS.keys()
+    test_mode: True  -> quick / sample run
+               False -> full run (all countries, where supported)
+    Returns: absolute path to the Excel file that was created.
     """
     kind = DSP_OPTIONS.get(dsp_name)
     if kind is None:
         raise ValueError(f"Unknown DSP: {dsp_name}")
 
-    # Normalise codes to a simple list of two-letter strings
-    codes: List[str] = []
-    if country_codes:
-        for c in country_codes:
-            if not c:
-                continue
-            cc = str(c).strip().upper()
-            if len(cc) == 2:
-                codes.append(cc)
+    if kind == "apple_music":
+        return run_apple_music_scraper(test_mode=test_mode)
 
-    if kind == "apple":
-        # Apple scraper accepts ISO-2 codes directly
-        return run_apple_music_scraper(
-            test_mode=test_mode,
-            country_codes=codes or None,
-        )
+    if kind == "icloud_plus":
+        return run_icloud_plus_scraper(test_mode=test_mode)
+
+    if kind == "spotify":
+        return run_spotify_scraper(test_mode=test_mode)
+
+    if kind == "netflix":
+        return run_netflix_scraper(test_mode=test_mode)
 
     if kind == "disney":
-        # Disney currently ignores custom countries and just uses its own
-        # 'test' or 'full' list internally.
         mode = "test" if test_mode else "full"
         return run_disney_scraper(mode=mode)
 
-    raise ValueError(f"Unsupported DSP kind: {kind}")
+    raise ValueError(f"No handler implemented for kind '{kind}'")
