@@ -1,6 +1,6 @@
 import asyncio, re, pandas as pd, functools
 from playwright.async_api import async_playwright
-import pycountry, nest_asyncio
+import pycountry
 from difflib import get_close_matches
 from googletrans import Translator
 from forex_python.converter import CurrencyCodes
@@ -8,7 +8,6 @@ from tqdm.auto import tqdm
 from datetime import date
 from babel.numbers import get_territory_currencies
 
-nest_asyncio.apply()
 
 # ---------- Config ----------
 STANDARD_PLAN_NAMES = [
