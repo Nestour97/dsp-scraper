@@ -45,9 +45,12 @@ def run_scraper(dsp_name: str, test_mode: bool, test_countries=None) -> str:
             test_countries=test_countries,
         )
 
-    if kind == "netflix":
-        # For now Netflix uses its own logic; test_countries ignored.
-        return run_netflix_scraper(test_mode=test_mode)
+if kind == "netflix":
+    return run_netflix_scraper(
+        test_mode=test_mode,
+        test_countries=test_countries,
+    )
+
 
     if kind == "disney":
         mode = "test" if test_mode else "full"
