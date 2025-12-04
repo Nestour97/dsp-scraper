@@ -45,11 +45,11 @@ def run_scraper(dsp_name: str, test_mode: bool, test_countries=None) -> str:
             test_countries=test_countries,
         )
 
-if kind == "netflix":
-    return run_netflix_scraper(
-        test_mode=test_mode,
-        test_countries=test_countries,
-    )
+    if kind == "netflix":
+        return run_netflix_scraper(
+            test_mode=test_mode,
+            test_countries=test_countries,
+        )
 
 
     if kind == "disney":
