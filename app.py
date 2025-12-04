@@ -29,7 +29,7 @@ DISNEY_LOGO_PATH = Path("disney_plus_logo.png")
 DSP_LOGOS = {
     "Apple Music": APPLE_LOGO_PATH,
     "Disney+": DISNEY_LOGO_PATH,
-    # later you can add: "Spotify": Path("spotify_logo.png"),
+    # e.g. "Spotify": Path("spotify_logo.png"),
 }
 
 # ---------- COUNTRY OPTIONS (for Test mode) ----------
@@ -74,26 +74,33 @@ st.markdown(
     .block-container {
         padding-top: 2rem;
         padding-bottom: 2.5rem;
-        padding-left: 2.5rem;
-        padding-right: 2.5rem;
+        padding-left: 2rem;
+        padding-right: 2rem;
         max-width: 1600px;
-        margin: 0 auto;
+        margin-left: auto;
+        margin-right: auto;
         background-color: #000000;
     }
 
-    /* Sidebar: dark with white text */
+    /* Sidebar: dark with clear text */
     [data-testid="stSidebar"] {
         background-color: #050505;
-        color: #f5f5f5;
     }
     [data-testid="stSidebar"] * {
         color: #f5f5f5 !important;
     }
 
-    /* Header */
+    /* Make most text white for readability */
+    h1, h2, h3, h4, h5, h6, label, p {
+        color: #f5f5f5 !important;
+    }
+
     .header-wrapper {
         text-align: center;
-        margin-bottom: 1.7rem;
+        max-width: 900px;
+        margin-left: auto;
+        margin-right: auto;
+        margin-bottom: 1.8rem;
     }
     .header-title {
         font-size: 2.5rem;
@@ -106,9 +113,8 @@ st.markdown(
     }
     .header-subtitle {
         font-size: 0.98rem;
-        color: #d2d2d2;
-        max-width: 900px;
-        margin: 0 auto;
+        color: #f2f2f2;
+        margin: 0 auto 0.5rem auto;
     }
     .header-pill {
         display: inline-flex;
@@ -121,10 +127,9 @@ st.markdown(
         color: #ffffff;
         text-transform: uppercase;
         letter-spacing: 0.12em;
-        margin-top: 0.45rem;
+        margin-top: 0.25rem;
     }
 
-    /* How it works card */
     .how-card {
         background-color: #050505;
         border-radius: 0.8rem;
@@ -152,7 +157,7 @@ st.markdown(
 
     .side-note {
         font-size: 0.86rem;
-        color: #bfbfbf;
+        color: #cccccc;
     }
 
     /* Center the DSP tabs */
@@ -177,7 +182,7 @@ st.markdown(
         background-color: #020202;
     }
 
-    /* ALL buttons: Sony red pill */
+    /* Buttons: Sony red pill */
     div.stButton > button {
         border-radius: 999px !important;
         background: #e31c23 !important;
@@ -223,7 +228,7 @@ def load_excel_as_df(excel_path: str) -> pd.DataFrame:
 
 
 def render_powerbi_grid(df: pd.DataFrame, excel_path: str) -> None:
-    st.subheader("Data explorer (Power BI-style)")
+    st.markdown("<h3>Data explorer (Power BI-style)</h3>", unsafe_allow_html=True)
 
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(
@@ -292,7 +297,7 @@ def estimate_expected_seconds(dsp_name: str, mode_label: str, codes: list[str]) 
     n = estimate_country_count(dsp_name, mode_label, codes)
 
     if dsp_name == "Apple Music":
-        per = 3.0  # seconds per country (conservative)
+        per = 3.0
     elif dsp_name == "Disney+":
         per = 4.5
     else:
@@ -328,7 +333,7 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
     if dsp_name == "Disney+":
         ensure_playwright_for_disney()
 
-    st.markdown("### Run status")
+    st.markdown("<h3>Run status</h3>", unsafe_allow_html=True)
     progress = st.progress(0)
     status = st.empty()
 
@@ -372,6 +377,7 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
     df = load_excel_as_df(excel_path)
     rows = len(df)
 
+    st.success(f"Scraped {rows:,} rows for {dsp_name}.")
     st.session_state["results"][result_key(dsp_name, mode_label, codes)] = {
         "df": df,
         "excel": excel_path,
@@ -379,7 +385,6 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
         "ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
 
-    st.success(f"Scraped {rows:,} rows for {dsp_name}.")
     render_powerbi_grid(df, excel_path)
 
     if dsp_name == "Apple Music":
@@ -393,7 +398,56 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
                 pass
 
 
-# ---------- SIMPLE SIDEBAR TEXT (no modes here anymore) ----------
+def country_checkbox_selector(dsp_name: str) -> list[str]:
+    """
+    Country selector that behaves more like the 'tick list' you showed:
+    - Search box
+    - Below it, a list of checkboxes that stays open
+    """
+    prefix = f"{dsp_name}_countries"
+    search = st.text_input(
+        "Search country name or code",
+        key=f"{prefix}_search",
+        help="Type to filter the list below, then tick one or more countries.",
+    )
+
+    all_labels = COUNTRY_LABELS
+    if search:
+        labels = [l for l in all_labels if search.lower() in l.lower()]
+    else:
+        labels = all_labels
+
+    # initialise selection store
+    sel_key = f"{prefix}_selected"
+    if sel_key not in st.session_state:
+        st.session_state[sel_key] = []
+
+    selected_set = set(st.session_state[sel_key])
+
+    # show at most 40 matches to avoid an extremely long list
+    max_show = 40
+    labels_to_show = labels[:max_show]
+
+    st.markdown(
+        f"<p class='side-note'>Showing {len(labels_to_show)} of "
+        f"{len(labels)} matches · {len(selected_set)} selected</p>",
+        unsafe_allow_html=True,
+    )
+
+    for label in labels_to_show:
+        key = f"{prefix}_{label}"
+        checked = label in selected_set
+        new_checked = st.checkbox(label, value=checked, key=key)
+        if new_checked and not checked:
+            selected_set.add(label)
+        elif not new_checked and checked:
+            selected_set.remove(label)
+
+    st.session_state[sel_key] = sorted(selected_set)
+    return [LABEL_TO_CODE[l] for l in st.session_state[sel_key]]
+
+
+# ---------- SIMPLE SIDEBAR TEXT ----------
 
 with st.sidebar:
     st.markdown("### DSP Price Scraper")
@@ -431,6 +485,7 @@ st.markdown(
         <ul>
             <li>Select <b>Apple Music</b>, <b>Disney+</b>, or another DSP in the tabs below.</li>
             <li>In each tab, choose <b>Full</b> for all countries or <b>Test</b> to target specific markets.</li>
+            <li>In Test mode, use the search box and tick countries from the list.</li>
             <li>Click <b>Run scraper</b> to launch the underlying Python script for that DSP.</li>
             <li>Track progress with a live percentage, elapsed time, and estimated remaining time.</li>
             <li>Explore and download the results from the interactive table.</li>
@@ -442,7 +497,7 @@ st.markdown(
 
 st.markdown('<div class="section-heading">Choose your DSP</div>', unsafe_allow_html=True)
 
-# ---------- MAIN TABS (centered, with per-DSP mode + countries) ----------
+# ---------- MAIN TABS (centered, per-DSP controls) ----------
 
 dsp_names = list(DSP_OPTIONS.keys())
 tabs = st.tabs(dsp_names)
@@ -456,9 +511,13 @@ for dsp_name, tab in zip(dsp_names, tabs):
         with head_left:
             if logo_path is not None:
                 logo(logo_path, width=80, alt=dsp_name)
-            st.markdown(f"#### {dsp_name} pricing")
             st.markdown(
-                f"Scrape global {dsp_name} subscription prices using your Python scraper."
+                f"<h4 style='margin-bottom:0.3rem;'>{dsp_name} pricing</h4>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "<p>Scrape global subscription prices using your Python scraper.</p>",
+                unsafe_allow_html=True,
             )
 
         with head_right:
@@ -468,28 +527,18 @@ for dsp_name, tab in zip(dsp_names, tabs):
                 index=0,
                 horizontal=True,
                 key=f"mode_{dsp_name}",
-                help="Full = all countries. Test = select specific markets.",
             )
 
-            selected_codes: list[str] = []
             if mode_label == "Test":
-                selected_labels = st.multiselect(
-                    "Countries (optional)",
-                    COUNTRY_LABELS,
-                    key=f"countries_{dsp_name}",
-                    help=(
-                        "Start typing a country name or code, press Enter or click "
-                        "to add. You can select multiple countries."
-                    ),
-                )
-                selected_codes = [LABEL_TO_CODE[l] for l in selected_labels]
+                selected_codes = country_checkbox_selector(dsp_name)
+            else:
+                selected_codes = []
 
-        st.markdown("")  # small spacing
+        st.markdown("")  # spacing
 
         run_button = st.button(
             f"Run {dsp_name} scraper",
             key=f"run_{dsp_name}",
-            help=f"Launch {dsp_name} scraper",
         )
 
         if run_button:
