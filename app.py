@@ -1,5 +1,6 @@
 import sys
 import time
+import base64
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -74,15 +75,14 @@ st.markdown(
     .block-container {
         padding-top: 2rem;
         padding-bottom: 2.5rem;
-        padding-left: 2rem;
-        padding-right: 2rem;
-        max-width: 1600px;
+        padding-left: 1.5rem;
+        padding-right: 1.5rem;
+        max-width: 1700px;
         margin-left: auto;
         margin-right: auto;
         background-color: #000000;
     }
 
-    /* Sidebar: dark with clear text */
     [data-testid="stSidebar"] {
         background-color: #050505;
     }
@@ -90,7 +90,6 @@ st.markdown(
         color: #f5f5f5 !important;
     }
 
-    /* Make most text white for readability */
     h1, h2, h3, h4, h5, h6, label, p {
         color: #f5f5f5 !important;
     }
@@ -313,6 +312,21 @@ def logo(path: Path, width: int, alt: str):
         st.markdown(f"**{alt}**")
 
 
+def centered_sony_logo():
+    """Embed Sony logo as base64 and truly centre it."""
+    if not SONY_LOGO_PATH.is_file():
+        return
+    data = base64.b64encode(SONY_LOGO_PATH.read_bytes()).decode()
+    st.markdown(
+        f"""
+        <p style="text-align:center; margin-bottom:0.3rem;">
+            <img src="data:image/png;base64,{data}" width="120">
+        </p>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def show_cached_result(dsp_name: str, mode_label: str, codes: list[str]) -> None:
     key = result_key(dsp_name, mode_label, codes)
     cached = st.session_state["results"].get(key)
@@ -400,9 +414,8 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
 
 def country_checkbox_selector(dsp_name: str) -> list[str]:
     """
-    Country selector that behaves more like the 'tick list' you showed:
-    - Search box
-    - Below it, a list of checkboxes that stays open
+    Country selector that behaves like a searchable tick list,
+    but in two columns and with a shorter visible list.
     """
     prefix = f"{dsp_name}_countries"
     search = st.text_input(
@@ -417,15 +430,13 @@ def country_checkbox_selector(dsp_name: str) -> list[str]:
     else:
         labels = all_labels
 
-    # initialise selection store
     sel_key = f"{prefix}_selected"
     if sel_key not in st.session_state:
         st.session_state[sel_key] = []
 
     selected_set = set(st.session_state[sel_key])
 
-    # show at most 40 matches to avoid an extremely long list
-    max_show = 40
+    max_show = 24  # keep visible list compact
     labels_to_show = labels[:max_show]
 
     st.markdown(
@@ -434,14 +445,17 @@ def country_checkbox_selector(dsp_name: str) -> list[str]:
         unsafe_allow_html=True,
     )
 
-    for label in labels_to_show:
-        key = f"{prefix}_{label}"
-        checked = label in selected_set
-        new_checked = st.checkbox(label, value=checked, key=key)
-        if new_checked and not checked:
-            selected_set.add(label)
-        elif not new_checked and checked:
-            selected_set.remove(label)
+    col1, col2 = st.columns(2)
+    for i, label in enumerate(labels_to_show):
+        col = col1 if i % 2 == 0 else col2
+        with col:
+            key = f"{prefix}_{label}"
+            checked = label in selected_set
+            new_checked = st.checkbox(label, value=checked, key=key)
+            if new_checked and not checked:
+                selected_set.add(label)
+            elif not new_checked and checked:
+                selected_set.remove(label)
 
     st.session_state[sel_key] = sorted(selected_set)
     return [LABEL_TO_CODE[l] for l in st.session_state[sel_key]]
@@ -457,12 +471,9 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-# ---------- SONY HEADER (centered) ----------
+# ---------- SONY HEADER (perfectly centred) ----------
 
-logo_row = st.columns([1, 1, 1])
-with logo_row[1]:
-    if SONY_LOGO_PATH.is_file():
-        st.image(str(SONY_LOGO_PATH), width=140)
+centered_sony_logo()
 
 st.markdown(
     """
