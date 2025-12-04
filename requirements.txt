@@ -11,3 +11,5 @@ deep-translator
 unidecode
 streamlit-aggrid
 babel
+googletrans
+
