@@ -26,6 +26,12 @@ SONY_LOGO_PATH = Path("sony_logo.png")
 APPLE_LOGO_PATH = Path("apple_music_logo.png")
 DISNEY_LOGO_PATH = Path("disney_plus_logo.png")
 
+DSP_LOGOS = {
+    "Apple Music": APPLE_LOGO_PATH,
+    "Disney+": DISNEY_LOGO_PATH,
+    # Add new DSPs here later: "Spotify": Path("spotify_logo.png"), etc.
+}
+
 # ---------- COUNTRY OPTIONS (for Test mode) ----------
 
 COUNTRY_LABELS: list[str] = []
@@ -60,59 +66,71 @@ def result_key(dsp_name: str, mode_label: str, country_codes: list[str]) -> str:
 st.markdown(
     """
     <style>
+    /* Entire page */
     body {
         background-color: #000000;
         color: #f5f5f5;
     }
+
+    /* Main content area */
     .block-container {
-        padding-top: 1.4rem;
-        padding-bottom: 2.4rem;
-        padding-left: 3rem;
-        padding-right: 3rem;
-        max-width: 100%;
+        padding-top: 2rem;
+        padding-bottom: 2.5rem;
+        padding-left: 4rem;
+        padding-right: 4rem;
+        max-width: 1400px;
+        margin: 0 auto;
+        background-color: #000000;
     }
 
-    /* HEADER */
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: #050505;
+        color: #f5f5f5;
+    }
+
+    /* Header */
     .header-wrapper {
         text-align: center;
         margin-bottom: 1.6rem;
+    }
+    .header-title {
+        font-size: 2.4rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        margin-top: 0.5rem;
+        margin-bottom: 0.35rem;
+        color: #ffffff;
+        text-transform: uppercase;
+    }
+    .header-subtitle {
+        font-size: 0.98rem;
+        color: #d2d2d2;
+        max-width: 900px;
+        margin: 0 auto;
     }
     .header-pill {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        padding: 0.18rem 0.8rem;
+        padding: 0.16rem 0.9rem;
         border-radius: 999px;
-        font-size: 0.78rem;
+        font-size: 0.76rem;
         background: #e31c23;
         color: #ffffff;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-top: 0.45rem;
-        margin-bottom: 0.5rem;
-    }
-    .header-title {
-        font-size: 2.3rem;
-        font-weight: 800;
-        letter-spacing: 0.04em;
-        margin-bottom: 0.25rem;
-        color: #ffffff;
-    }
-    .header-subtitle {
-        font-size: 0.96rem;
-        color: #d5d5d5;
-        max-width: 800px;
-        margin: 0.1rem auto 0 auto;
+        letter-spacing: 0.12em;
+        margin-top: 0.35rem;
     }
 
-    /* SECTIONS */
+    /* How it works card */
     .how-card {
         background-color: #050505;
         border-radius: 0.8rem;
-        padding: 0.9rem 1.2rem;
-        border: 1px solid #2a2a2a;
-        color: #f3f3f3;
-        margin-bottom: 1.0rem;
+        padding: 0.9rem 1.3rem;
+        border: 1px solid #262626;
+        color: #f5f5f5;
+        margin-bottom: 1.2rem;
     }
     .how-card ul {
         margin-top: 0.35rem;
@@ -122,19 +140,21 @@ st.markdown(
     .how-card li {
         font-size: 0.9rem;
     }
+
     .section-heading {
-        font-size: 1.25rem;
+        font-size: 1.2rem;
         font-weight: 600;
-        margin-top: 0.8rem;
+        margin-top: 0.9rem;
         margin-bottom: 0.4rem;
         color: #ffffff;
     }
+
     .side-note {
         font-size: 0.86rem;
         color: #bfbfbf;
     }
 
-    /* GRID */
+    /* AgGrid styling */
     .ag-theme-streamlit .ag-root-wrapper {
         border-radius: 0.7rem;
         border: 1px solid #444444;
@@ -151,13 +171,15 @@ st.markdown(
         background-color: #020202;
     }
 
-    /* BUTTONS */
+    /* Primary run buttons */
     .run-button button {
         border-radius: 999px !important;
         background: #e31c23 !important;
         border: none !important;
         color: white !important;
         font-weight: 600 !important;
+        padding-left: 1.3rem !important;
+        padding-right: 1.3rem !important;
     }
     </style>
     """,
@@ -308,7 +330,6 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
     start = time.time()
 
     def run_worker():
-        # call into dsp_scrapers.run_scraper
         return run_scraper(dsp_name, test_mode, codes)
 
     with ThreadPoolExecutor(max_workers=1) as ex:
@@ -335,7 +356,6 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
             nice_error_box(e)
             return
 
-    # Done
     elapsed = time.time() - start
     progress.progress(100)
     status.markdown(
@@ -399,22 +419,22 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-# ---------- CENTERED HEADER (logo → title → description) ----------
+# ---------- SONY HEADER (logo → big title → description) ----------
 
 logo_row = st.columns([1, 1, 1])
 with logo_row[1]:
     if SONY_LOGO_PATH.is_file():
-        st.image(str(SONY_LOGO_PATH), width=130)
+        st.image(str(SONY_LOGO_PATH), width=140)
 
 st.markdown(
     """
     <div class="header-wrapper">
-        <div class="header-pill">DSP analytics tool</div>
-        <div class="header-title">DSP Price Scraper</div>
+        <div class="header-title">DSP PRICE SCRAPER</div>
         <p class="header-subtitle">
             Central hub for Apple Music &amp; Disney+ pricing. Run scrapes on demand,
             explore the results in a Power BI-style grid, and export straight to Excel.
         </p>
+        <div class="header-pill">DSP analytics tool</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -425,7 +445,7 @@ st.markdown(
     <div class="how-card">
         <b>How it works</b>
         <ul>
-            <li>Select <b>Apple Music</b> or <b>Disney+</b> in the tabs below.</li>
+            <li>Select <b>Apple Music</b> or <b>Disney+</b> in the tabs below (more DSPs can be added later).</li>
             <li>Use the sidebar to pick <b>Full</b> or <b>Test</b>. In Test mode you can choose multiple countries from the search box.</li>
             <li>Click <b>Run scraper</b> to launch the underlying Python script.</li>
             <li>Track progress with a live percentage, elapsed time and estimated remaining time.</li>
@@ -438,53 +458,35 @@ st.markdown(
 
 st.markdown('<div class="section-heading">Choose your DSP</div>', unsafe_allow_html=True)
 
-# ---------- MAIN TABS ----------
+# ---------- MAIN TABS (ready for more DSPs later) ----------
 
-apple_tab, disney_tab = st.tabs(["Apple Music", "Disney+"])
+dsp_names = list(DSP_OPTIONS.keys())
+tabs = st.tabs(dsp_names)
 
-with apple_tab:
-    c1, c2 = st.columns([1, 4])
+for dsp_name, tab in zip(dsp_names, tabs):
+    with tab:
+        logo_path = DSP_LOGOS.get(dsp_name)
+        c1, c2 = st.columns([1, 4])
 
-    with c1:
-        logo(APPLE_LOGO_PATH, width=80, alt="Apple Music")
+        with c1:
+            if logo_path is not None:
+                logo(logo_path, width=80, alt=dsp_name)
+            else:
+                st.markdown(f"#### {dsp_name}")
 
-    with c2:
-        st.markdown("#### Apple Music pricing")
-        st.markdown(
-            "Scrape global Apple Music plan prices, currencies and country codes."
+        with c2:
+            st.markdown(f"#### {dsp_name} pricing")
+            st.markdown(
+                f"Scrape global {dsp_name} subscription prices using your Python scraper."
+            )
+
+        run_button = st.button(
+            f"Run {dsp_name} scraper",
+            key=f"run_{dsp_name}",
+            help=f"Launch {dsp_name} scraper",
         )
 
-    run_button = st.button(
-        "Run Apple Music scraper",
-        key="run_apple",
-        help="Launch Apple Music scraper",
-        type="primary",
-    )
-
-    if run_button:
-        run_and_render("Apple Music", mode_label, selected_codes)
-    else:
-        show_cached_result("Apple Music", mode_label, selected_codes)
-
-with disney_tab:
-    c1, c2 = st.columns([1, 4])
-
-    with c1:
-        logo(DISNEY_LOGO_PATH, width=90, alt="Disney+")
-
-    with c2:
-        st.markdown("#### Disney+ pricing")
-        st.markdown(
-            "Scrape global Disney+ subscription prices using the Playwright-powered scraper."
-        )
-
-    run_button = st.button(
-        "Run Disney+ scraper",
-        key="run_disney",
-        help="Launch Disney+ scraper",
-    )
-
-    if run_button:
-        run_and_render("Disney+", mode_label, selected_codes)
-    else:
-        show_cached_result("Disney+", mode_label, selected_codes)
+        if run_button:
+            run_and_render(dsp_name, mode_label, selected_codes)
+        else:
+            show_cached_result(dsp_name, mode_label, selected_codes)
