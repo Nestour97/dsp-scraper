@@ -685,20 +685,34 @@ async def run():
 # ---------------------------------------------------------------------------
 # Streamlit wrapper
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Streamlit wrapper
+# ---------------------------------------------------------------------------
 import asyncio
 
-async def _run_spotify_async(test_mode: bool = True) -> str:
+async def _run_spotify_async(test_mode: bool = True, test_countries=None) -> str:
     """
-    Internal async runner. Uses global TEST_MODE and the async `run()` above.
+    Internal async runner. Uses global TEST_MODE and TEST_MARKETS
+    and the async `run()` defined above.
     """
-    global TEST_MODE
+    global TEST_MODE, TEST_MARKETS
+
     TEST_MODE = bool(test_mode)
-    # run() now returns the Excel path
+
+    # If the UI passed a list of ISO codes in Test mode, use their lowercase
+    # versions as TEST_MARKETS. The main logic already handles base codes
+    # like 'us', 'de', etc. and prefers '-en' variants where available.
+    if TEST_MODE and test_countries:
+        TEST_MARKETS = [c.lower() for c in test_countries]
+        print(f"[SPOTIFY] UI-driven TEST_MARKETS: {TEST_MARKETS}")
+
+    # run() already returns the Excel path
     return await run()
 
-def run_spotify_scraper(test_mode: bool = True) -> str:
+def run_spotify_scraper(test_mode: bool = True, test_countries=None) -> str:
     """
     Public function used by the Streamlit app.
     Returns the absolute path to the Spotify Excel file.
     """
-    return asyncio.run(_run_spotify_async(test_mode=test_mode))
+    return asyncio.run(_run_spotify_async(test_mode=test_mode, test_countries=test_countries))
+
