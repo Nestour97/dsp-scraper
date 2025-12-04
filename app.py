@@ -1,19 +1,18 @@
-import sys
+import os
 import time
+import threading
 import base64
-import subprocess
-from datetime import datetime
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
-import pycountry
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
-from dsp_scrapers import DSP_OPTIONS, run_scraper  # unified scraper
+from dsp_scrapers import run_scraper
 
-# ---------- PAGE CONFIG ----------
+# ---------- THEME & PAGE CONFIG ----------
+
+SONY_RED = "#e31c23"
 
 st.set_page_config(
     page_title="DSP Price Scraper",
@@ -21,62 +20,22 @@ st.set_page_config(
     layout="wide",
 )
 
-# ---------- LOGO PATHS ----------
-
-SONY_LOGO_PATH = Path("sony_logo.png")
-APPLE_LOGO_PATH = Path("apple_music_logo.png")
-DISNEY_LOGO_PATH = Path("disney_plus_logo.png")
-
-DSP_LOGOS = {
-    "Apple Music": APPLE_LOGO_PATH,
-    "Disney+": DISNEY_LOGO_PATH,
-    # e.g. "Spotify": Path("spotify_logo.png"),
-}
-
-# ---------- COUNTRY OPTIONS ----------
-
-COUNTRY_LABELS: list[str] = []
-LABEL_TO_CODE: dict[str, str] = {}
-
-for c in pycountry.countries:
-    code = c.alpha_2
-    name = c.name
-    label = f"{name} ({code})"
-    COUNTRY_LABELS.append(label)
-    LABEL_TO_CODE[label] = code
-
-COUNTRY_LABELS.sort()
-
-# ---------- SESSION STATE ----------
-
-if "results" not in st.session_state:
-    st.session_state["results"] = {}
-
-if "playwright_ready" not in st.session_state:
-    st.session_state["playwright_ready"] = False
-
-
-def result_key(dsp_name: str, mode_label: str, country_codes: list[str]) -> str:
-    codes_part = ",".join(sorted(country_codes)) if country_codes else "ALL"
-    return f"{dsp_name}::{mode_label}::{codes_part}"
-
-
 # ---------- GLOBAL STYLES ----------
 
 st.markdown(
-    """
+    f"""
     <style>
-    body {
+    body {{
         background-color: #000000;
         color: #f5f5f5;
-    }
+    }}
 
     /* hide sidebar completely */
-    [data-testid="stSidebar"] {
+    [data-testid="stSidebar"] {{
         display: none;
-    }
+    }}
 
-    .block-container {
+    .block-container {{
         padding-top: 2rem;
         padding-bottom: 2.5rem;
         padding-left: 2.5rem;
@@ -85,20 +44,20 @@ st.markdown(
         margin-left: auto;
         margin-right: auto;
         background-color: #000000;
-    }
+    }}
 
-    h1, h2, h3, h4, h5, h6, label, p {
+    h1, h2, h3, h4, h5, h6, label, p {{
         color: #f5f5f5 !important;
-    }
+    }}
 
-    .header-wrapper {
+    .header-wrapper {{
         text-align: center;
         max-width: 900px;
         margin-left: auto;
         margin-right: auto;
         margin-bottom: 1.8rem;
-    }
-    .header-title {
+    }}
+    .header-title {{
         font-size: 2.5rem;
         font-weight: 800;
         letter-spacing: 0.09em;
@@ -106,146 +65,184 @@ st.markdown(
         margin-bottom: 0.35rem;
         color: #ffffff;
         text-transform: uppercase;
-    }
-    .header-subtitle {
+    }}
+    .header-subtitle {{
         font-size: 0.98rem;
         color: #f2f2f2;
         margin: 0 auto 0.5rem auto;
-    }
-    .header-pill {
+    }}
+    .header-pill {{
         display: inline-flex;
         align-items: center;
         justify-content: center;
         padding: 0.16rem 0.9rem;
         border-radius: 999px;
         font-size: 0.76rem;
-        background: #e31c23;
+        background: {SONY_RED};
         color: #ffffff;
         text-transform: uppercase;
         letter-spacing: 0.12em;
         margin-top: 0.25rem;
-    }
+    }}
 
-    .how-card {
+    .how-card {{
         background-color: #050505;
         border-radius: 0.8rem;
         padding: 0.9rem 1.3rem;
         border: 1px solid #262626;
         color: #f5f5f5;
         margin-bottom: 1.2rem;
-    }
-    .how-card ul {
+    }}
+    .how-card ul {{
         margin-top: 0.35rem;
         margin-bottom: 0;
         padding-left: 1.1rem;
-    }
-    .how-card li {
+    }}
+    .how-card li {{
         font-size: 0.9rem;
-    }
+    }}
 
-    .section-heading {
+    .section-heading {{
         font-size: 1.2rem;
         font-weight: 600;
         margin-top: 0.9rem;
         margin-bottom: 0.4rem;
         color: #ffffff;
-    }
+    }}
 
-    .side-note {
+    .side-note {{
         font-size: 0.86rem;
         color: #cccccc;
-    }
+    }}
 
     /* center DSP tabs and enlarge labels */
-    .stTabs [role="tablist"] {
+    .stTabs [role="tablist"] {{
         justify-content: center;
-    }
-    .stTabs [role="tab"] p {
+    }}
+    .stTabs [role="tab"] p {{
         font-size: 1.02rem;
         font-weight: 600;
-    }
+    }}
 
     /* AgGrid styling */
-    .ag-theme-streamlit .ag-root-wrapper {
+    .ag-theme-streamlit .ag-root-wrapper {{
         border-radius: 0.7rem;
         border: 1px solid #444444;
-    }
-    .ag-theme-streamlit .ag-header {
+    }}
+    .ag-theme-streamlit .ag-header {{
         background: #111111;
         color: #fafafa;
         font-weight: 600;
-    }
-    .ag-theme-streamlit .ag-row-even {
+    }}
+    .ag-theme-streamlit .ag-row-even {{
         background-color: #050505;
-    }
-    .ag-theme-streamlit .ag-row-odd {
+    }}
+    .ag-theme-streamlit .ag-row-odd {{
         background-color: #020202;
-    }
+    }}
 
     /* Primary buttons (run buttons) */
-    div.stButton > button {
+    div.stButton > button {{
         border-radius: 999px !important;
-        background: #e31c23 !important;
+        background: {SONY_RED} !important;
         border: none !important;
         color: white !important;
         font-weight: 600 !important;
         padding-left: 1.3rem !important;
         padding-right: 1.3rem !important;
-    }
+    }}
 
     /* Download button in Sony red */
-    .stDownloadButton > button {
+    .stDownloadButton > button {{
         border-radius: 999px !important;
-        background: #e31c23 !important;
+        background: {SONY_RED} !important;
         border: none !important;
         color: white !important;
         font-weight: 600 !important;
         padding-left: 1.3rem !important;
         padding-right: 1.3rem !important;
-    }
+    }}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ---------- UTILITIES ----------
+# ---------- HELPERS ----------
 
-
-def ensure_playwright_for_disney() -> None:
-    """Install Playwright Chromium browser if needed (no-op after first time)."""
-    if st.session_state["playwright_ready"]:
+def centered_sony_logo():
+    logo_path = Path("sony_logo.png")
+    if not logo_path.is_file():
         return
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+    data = base64.b64encode(logo_path.read_bytes()).decode("utf-8")
+    st.markdown(
+        f'''
+        <p style="text-align:center; margin-bottom:0.3rem;">
+            <img src="data:image/png;base64,{data}" width="120">
+        </p>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+
+def run_with_progress(dsp_name: str, test_mode: bool):
+    """
+    Run a scraper in a background thread and show a smooth progress bar + ETA.
+    """
+    status_placeholder = st.empty()
+    progress = st.progress(0, text=f"Starting {dsp_name} scraper…")
+
+    result = {"path": None, "error": None}
+
+    def worker():
+        try:
+            result["path"] = run_scraper(dsp_name=dsp_name, test_mode=test_mode)
+        except Exception as e:
+            result["error"] = str(e)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    start = time.time()
+    expected = 90 if test_mode else 600  # very rough guess
+
+    while thread.is_alive():
+        elapsed = time.time() - start
+        pct = min(0.95, elapsed / expected)
+        pct_int = int(pct * 100)
+        remaining = max(0, int(expected - elapsed))
+        progress.progress(
+            pct_int,
+            text=f"{dsp_name}: {pct_int}% • Est. remaining ~{remaining:02d}s",
         )
-        st.session_state["playwright_ready"] = True
-    except Exception as e:
-        st.warning(
-            "Could not auto-install Playwright browsers. "
-            "Disney+ scraping may fail until Chromium is installed. "
-            f"Details: {e}"
-        )
+        time.sleep(0.6)
+
+    thread.join()
+
+    if result["error"]:
+        progress.empty()
+        status_placeholder.error(f"Error while running {dsp_name}: {result['error']}")
+        return None
+
+    progress.progress(100, text=f"{dsp_name}: 100% • Completed")
+    status_placeholder.success("Scrape finished successfully.")
+    return result["path"]
 
 
-def load_excel_as_df(excel_path: str) -> pd.DataFrame:
-    path = Path(excel_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Excel file not found: {path}")
-    return pd.read_excel(path)
+def render_table(excel_path: str, dsp_name: str):
+    if not excel_path or not os.path.exists(excel_path):
+        st.error("File not found – scraper may not have produced an output.")
+        return
 
+    st.markdown(f"### 📊 Data explorer – {dsp_name}")
 
-def render_powerbi_grid(df: pd.DataFrame, excel_path: str) -> None:
-    st.markdown("<h3>Data explorer (Power BI-style)</h3>", unsafe_allow_html=True)
+    df = pd.read_excel(excel_path)
 
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(
-        sortable=True,
         filter=True,
+        sortable=True,
         resizable=True,
+        floatingFilter=True,
     )
     gb.configure_pagination(
         enabled=True,
@@ -253,6 +250,7 @@ def render_powerbi_grid(df: pd.DataFrame, excel_path: str) -> None:
         paginationPageSize=50,
     )
     gb.configure_side_bar()
+
     grid_options = gb.build()
 
     AgGrid(
@@ -260,168 +258,65 @@ def render_powerbi_grid(df: pd.DataFrame, excel_path: str) -> None:
         gridOptions=grid_options,
         update_mode=GridUpdateMode.NO_UPDATE,
         theme="streamlit",
-        height=620,
+        height=520,
         fit_columns_on_grid_load=True,
     )
 
     with open(excel_path, "rb") as f:
         data = f.read()
+
     st.download_button(
-        "📥 Download Excel extract",
+        "📥 Download full Excel file",
         data=data,
-        file_name=Path(excel_path).name,
-        mime=(
-            "application/vnd.openxmlformats-officedocument."
-            "spreadsheetml.sheet"
-        ),
+        file_name=os.path.basename(excel_path),
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 
-def nice_error_box(err: Exception) -> None:
-    st.error(
-        "An error occurred while running the scraper:\n\n"
-        f"`{type(err).__name__}: {err}`"
+def dsp_panel(dsp_name: str, logo_filename: str, description: str):
+    """
+    Shared layout for each leaf DSP scraper panel.
+    """
+    col_logo, col_text = st.columns([1, 5])
+
+    with col_logo:
+        logo_path = Path(logo_filename)
+        if logo_path.is_file():
+            st.image(str(logo_path), width=56)
+        else:
+            st.write("")
+
+    with col_text:
+        st.markdown(
+            f"#### {dsp_name}\n"
+            f"<p style='color:#c7c7c7; margin-bottom:0.6rem;'>{description}</p>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("##### Mode")
+    mode = st.radio(
+        "Mode",
+        options=["Full (all countries)", "Test (quick run)"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key=f"mode_{dsp_name}",
     )
-    with st.expander("Show full traceback"):
-        st.exception(err)
+    test_mode = mode.startswith("Test")
+
+    st.write("")
+    if st.button(f"🚀 Run {dsp_name} scraper", key=f"run_{dsp_name}"):
+        excel_path = run_with_progress(dsp_name=dsp_name, test_mode=test_mode)
+        if excel_path:
+            st.session_state["last_result"] = {
+                "dsp_name": dsp_name,
+                "excel_path": excel_path,
+            }
 
 
-def format_mm_ss(seconds: float) -> str:
-    seconds = max(int(seconds), 0)
-    m, s = divmod(seconds, 60)
-    return f"{m:02d}:{s:02d}"
+# ---------- SESSION STATE ----------
 
-
-def estimate_country_count(dsp_name: str, mode_label: str, codes: list[str]) -> int:
-    if codes:
-        return len(codes)
-
-    if dsp_name == "Apple Music":
-        return 230
-    if dsp_name == "Disney+":
-        return 90
-    return 150
-
-
-def estimate_expected_seconds(dsp_name: str, mode_label: str, codes: list[str]) -> float:
-    n = estimate_country_count(dsp_name, mode_label, codes)
-
-    if dsp_name == "Apple Music":
-        per = 3.0
-    elif dsp_name == "Disney+":
-        per = 4.5
-    else:
-        per = 3.0
-
-    return max(n * per, 20.0)
-
-
-def logo(path: Path, width: int, alt: str):
-    if path.is_file():
-        st.image(str(path), width=width)
-    else:
-        st.markdown(f"**{alt}**")
-
-
-def centered_sony_logo():
-    """Embed Sony logo as base64 and truly centre it."""
-    if not SONY_LOGO_PATH.is_file():
-        return
-    data = base64.b64encode(SONY_LOGO_PATH.read_bytes()).decode()
-    st.markdown(
-        f"""
-        <p style="text-align:center; margin-bottom:0.3rem;">
-            <img src="data:image/png;base64,{data}" width="120">
-        </p>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def show_cached_result(dsp_name: str, mode_label: str, codes: list[str]) -> None:
-    key = result_key(dsp_name, mode_label, codes)
-    cached = st.session_state["results"].get(key)
-    if not cached:
-        return
-
-    st.caption(
-        f"Showing last run for **{dsp_name}** "
-        f"({cached['rows']:,} rows, scraped at {cached['ts']})."
-    )
-    render_powerbi_grid(cached["df"], cached["excel"])
-
-
-def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
-    """Run scraper in background thread and show continuous progress + ETA."""
-    test_mode = mode_label == "Test"
-
-    if dsp_name == "Disney+":
-        ensure_playwright_for_disney()
-
-    st.markdown("<h3>Run status</h3>", unsafe_allow_html=True)
-    progress = st.progress(0)
-    status = st.empty()
-
-    expected_total = estimate_expected_seconds(dsp_name, mode_label, codes)
-    start = time.time()
-
-    def run_worker():
-        return run_scraper(dsp_name, test_mode, codes)
-
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(run_worker)
-
-        with st.spinner(f"Running {dsp_name} scraper…"):
-            while not future.done():
-                elapsed = time.time() - start
-                pct_est = min(int(100 * (elapsed / expected_total)), 95)
-                remaining_est = max(expected_total - elapsed, 0)
-
-                progress.progress(pct_est)
-                status.markdown(
-                    f"**{pct_est}%** · Elapsed {format_mm_ss(elapsed)} "
-                    f"· Est. remaining {format_mm_ss(remaining_est)}",
-                    unsafe_allow_html=True,
-                )
-                time.sleep(0.35)
-
-        try:
-            excel_path = future.result()
-        except Exception as e:
-            progress.progress(0)
-            nice_error_box(e)
-            return
-
-    elapsed = time.time() - start
-    progress.progress(100)
-    status.markdown(
-        f"**100%** · Elapsed {format_mm_ss(elapsed)} · Est. remaining 00:00",
-        unsafe_allow_html=True,
-    )
-
-    df = load_excel_as_df(excel_path)
-    rows = len(df)
-
-    st.success(f"Scraped {rows:,} rows for {dsp_name}.")
-    st.session_state["results"][result_key(dsp_name, mode_label, codes)] = {
-        "df": df,
-        "excel": excel_path,
-        "rows": rows,
-        "ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
-    }
-
-    render_powerbi_grid(df, excel_path)
-
-    if dsp_name == "Apple Music":
-        missing_csv = Path("apple_music_missing.csv")
-        if missing_csv.exists():
-            try:
-                miss_df = pd.read_csv(missing_csv)
-                with st.expander("Apple Music – countries that failed (debug log)"):
-                    st.dataframe(miss_df)
-            except Exception:
-                pass
-
+if "last_result" not in st.session_state:
+    st.session_state["last_result"] = None
 
 # ---------- HEADER ----------
 
@@ -432,8 +327,9 @@ st.markdown(
     <div class="header-wrapper">
         <div class="header-title">DSP PRICE SCRAPER</div>
         <p class="header-subtitle">
-            Central hub for Apple Music &amp; Disney+ pricing. Run scrapes on demand,
-            explore the results in a Power BI-style grid, and export straight to Excel.
+            Central hub for Apple Music, iCloud+, Spotify, Netflix &amp; Disney+ pricing.
+            Run scrapes on demand, explore the results in a Power BI-style grid,
+            and export straight to Excel.
         </p>
         <div class="header-pill">DSP ANALYTICS TOOL</div>
     </div>
@@ -446,11 +342,11 @@ st.markdown(
     <div class="how-card">
         <b>How it works</b>
         <ul>
-            <li>Select <b>Apple Music</b>, <b>Disney+</b>, or another DSP in the tabs below.</li>
-            <li>In each tab, choose <b>Full</b> for all countries or <b>Test</b> to target specific markets.</li>
-            <li>In Test mode, use the search box and select countries from the dropdown.</li>
-            <li>Click <b>Run scraper</b> to launch the underlying Python script for that DSP.</li>
-            <li>Track progress with a live percentage, elapsed time, and estimated remaining time.</li>
+            <li>Select <b>Apple</b>, <b>Spotify</b>, <b>Netflix</b> or <b>Disney+</b> in the tabs below.</li>
+            <li>Within Apple you can choose between <b>Apple Music</b> and <b>iCloud+</b>.</li>
+            <li>Use <b>Full</b> mode for a complete global run, or <b>Test</b> for a quick sample.</li>
+            <li>Click <b>Run scraper</b> to launch the underlying Python code for that DSP.</li>
+            <li>Track progress with a live percentage, elapsed time and estimated remaining time.</li>
             <li>Explore and download the results from the interactive table.</li>
         </ul>
     </div>
@@ -460,61 +356,62 @@ st.markdown(
 
 st.markdown('<div class="section-heading">Choose your DSP</div>', unsafe_allow_html=True)
 
-# ---------- MAIN TABS ----------
+# ---------- MAIN DSP TABS ----------
 
-dsp_names = list(DSP_OPTIONS.keys())
-tabs = st.tabs(dsp_names)
+main_tabs = st.tabs(["Apple", "Spotify", "Netflix", "Disney+"])
 
-for dsp_name, tab in zip(dsp_names, tabs):
-    with tab:
-        logo_path = DSP_LOGOS.get(dsp_name)
+# Apple tab: Apple Music + iCloud+
+with main_tabs[0]:
+    apple_tabs = st.tabs(["Apple Music", "iCloud+"])
 
-        head_left, head_right = st.columns([1, 2])
-
-        with head_left:
-            if logo_path is not None:
-                logo(logo_path, width=80, alt=dsp_name)
-            # bigger DSP name
-            st.markdown(
-                f"<h3 style='margin-bottom:0.3rem;'>{dsp_name} pricing</h3>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                "<p>Scrape global subscription prices using your Python scraper.</p>",
-                unsafe_allow_html=True,
-            )
-
-        with head_right:
-            mode_label = st.radio(
-                "Mode",
-                ["Full", "Test"],
-                index=0,
-                horizontal=True,
-                key=f"mode_{dsp_name}",
-            )
-
-            if mode_label == "Test":
-                selected_labels = st.multiselect(
-                    "Countries (type to search)",
-                    COUNTRY_LABELS,
-                    key=f"countries_{dsp_name}",
-                    help=(
-                        "Start typing a country name or code, then press Enter or "
-                        "click to add. You can select multiple countries."
-                    ),
-                )
-                selected_codes = [LABEL_TO_CODE[l] for l in selected_labels]
-            else:
-                selected_codes = []
-
-        st.markdown("")  # spacing
-
-        run_button = st.button(
-            f"Run {dsp_name} scraper",
-            key=f"run_{dsp_name}",
+    with apple_tabs[0]:
+        dsp_panel(
+            dsp_name="Apple Music",
+            logo_filename="apple_music_logo.png",
+            description="Scrape global Apple Music subscription prices, currencies and country codes.",
         )
 
-        if run_button:
-            run_and_render(dsp_name, mode_label, selected_codes)
-        else:
-            show_cached_result(dsp_name, mode_label, selected_codes)
+    with apple_tabs[1]:
+        dsp_panel(
+            dsp_name="iCloud+",
+            logo_filename="icloud_logo.png",
+            description="Scrape iCloud+ storage plan prices by country, including plan size and currency.",
+        )
+
+# Spotify tab
+with main_tabs[1]:
+    dsp_panel(
+        dsp_name="Spotify",
+        logo_filename="spotify_logo.png",
+        description="Scrape Spotify Premium plan prices by country using the Playwright-based scraper.",
+    )
+
+# Netflix tab
+with main_tabs[2]:
+    dsp_panel(
+        dsp_name="Netflix",
+        logo_filename="netflix_logo.png",
+        description="Scrape Netflix plan pricing for each available country from the Help Center article.",
+    )
+
+# Disney+ tab
+with main_tabs[3]:
+    dsp_panel(
+        dsp_name="Disney+",
+        logo_filename="disney_plus_logo.png",
+        description="Scrape Disney+ subscription pricing using the Playwright-powered scraper.",
+    )
+
+# ---------- DATA EXPLORER SECTION ----------
+
+st.markdown("---")
+
+last_result = st.session_state.get("last_result")
+
+if last_result and last_result.get("excel_path"):
+    render_table(
+        excel_path=last_result["excel_path"],
+        dsp_name=last_result["dsp_name"],
+    )
+else:
+    st.info("Run a scraper from the tabs above to see the results here.")
