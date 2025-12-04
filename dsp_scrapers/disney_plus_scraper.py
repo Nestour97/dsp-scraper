@@ -49,7 +49,12 @@ MODE       = "full"      # "test" or "full"
 HEADLESS   = True        # True = faster/more reliable; set False to watch the browser
 BROWSER    = "chromium"  # chromium / firefox / webkit
 START_URL  = "https://help.disneyplus.com/en-GB/article/disneyplus-price"
-# ===================================
+
+# Filled by run_disney_scraper() when the app is in test mode; used to
+# carry through the user-selected ISO alpha-2 country codes.
+SELECTED_ISO2: List[str] = []
+# ========
+
 
 # Try RapidFuzz for better fuzzy matching
 try:
@@ -875,8 +880,39 @@ def main():
             print(f"[fatal] {e}"); return
 
         if MODE == "test":
-            # US may not be listed in many locales; included here to prove it won't match UK by mistake.
-            countries = ["United States", "United Kingdom", "Japan", "Türkiye", "Brazil", "Saint Lucia"]
+            if SELECTED_ISO2:
+                print(f"[TEST] Using ISO-2 selection: {SELECTED_ISO2}")
+                picked: List[str] = []
+                for iso2 in SELECTED_ISO2:
+                    name = canonical_country_from_iso2(iso2)
+                    label = closest_text(name, countries, cutoff=80)
+                    if label and label not in picked:
+                        picked.append(label)
+
+                if picked:
+                    countries = picked
+                    print(f"[TEST] Mapped to picker countries: {countries}")
+                else:
+                    # Fallback to the previous hard-coded demo sample
+                    countries = [
+                        "United States",
+                        "United Kingdom",
+                        "Japan",
+                        "Türkiye",
+                        "Brazil",
+                        "Saint Lucia",
+                    ]
+            else:
+                # No explicit selection from the UI – use the original test sample
+                countries = [
+                    "United States",
+                    "United Kingdom",
+                    "Japan",
+                    "Türkiye",
+                    "Brazil",
+                    "Saint Lucia",
+                ]
+
 
         for i, requested_country in enumerate(countries, 1):
             print(f"\n[{i}/{len(countries)}] {requested_country}")
@@ -1015,20 +1051,25 @@ def main():
     print("\nSample rows:")
     print(df.head(12))
 
-def run_disney_scraper(mode="full"):
-    """
-    Wrapper used by the web app.
+def run_disney_scraper(mode: str = "full", test_countries=None) -> str:
+    """Wrapper used by the web app.
 
-    mode = "test" or "full"
-
-    Returns: absolute path to the Excel file created.
+    Parameters
+    ----------
+    mode:
+        "test" or "full" – controls how many countries are scraped.
+    test_countries:
+        Optional list of ISO alpha-2 codes (e.g. ["GB", "US"]) used
+        when *mode == "test"*.  In full mode this is ignored.
     """
-    global MODE
+    global MODE, SELECTED_ISO2
     MODE = mode  # "test" or "full"
+    SELECTED_ISO2 = [c.upper() for c in (test_countries or [])]
 
     main()  # this will write to EXCEL_PATH
 
     return str(EXCEL_PATH.resolve())
+
 
 if __name__ == "__main__":
     try:
