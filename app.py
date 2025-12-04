@@ -16,13 +16,12 @@ import pycountry
 # Canonical full-result filenames (must match what your scrapers save)
 # -------------------------------------------------------------------
 FULL_RESULT_FILES = {
-    "Apple Music": "apple_music_plans_all.xlsx",
-    "iCloud+": "icloud_plus_pricing_all.xlsx",
-    "Spotify": "spotify_cleaned_playwright.xlsx",
-    "Netflix": "netflix_pricing_by_country.xlsx",
-    "Disney+": "disney_prices_enriched.xlsx",
+    "Apple Music": Path("apple_music_plans_all.xlsx"),
+    "iCloud+": Path("icloud_plus_pricing_all.xlsx"),
+    "Spotify": Path("spotify_cleaned_playwright.xlsx"),
+    "Netflix": Path("netflix_pricing_by_country.xlsx"),
+    "Disney+": Path("dsp_scrapers") / "disney_prices_enriched.xlsx",
 }
-
 # Build a list like "Afghanistan (AF)", "Albania (AL)", ...
 COUNTRY_OPTIONS = sorted(
     [f"{c.name} ({c.alpha_2})" for c in pycountry.countries],
@@ -476,3 +475,4 @@ with main_tabs[3]:
         logo_filename="disney_plus_logo.png",
         description="Scrape Disney+ subscription pricing using the Playwright-powered scraper.",
     )
+
