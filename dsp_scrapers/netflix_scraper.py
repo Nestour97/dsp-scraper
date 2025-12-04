@@ -5,12 +5,59 @@ import re
 from pathlib import Path
 from typing import List, Dict, Any
 
+from difflib import get_close_matches
+
 import pandas as pd
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
+import pycountry
 
 
 # --- Helpers taken from your notebook ---------------------------------------
+def _iso2_to_netflix_labels(all_countries, iso_codes):
+    """Map ISO alpha-2 codes to Netflix country labels.
+
+    The Netflix help centre exposes `window.netflix.data.article.allCountries`,
+    which is a list of objects with a `label` field (the text shown in the
+    country picker).  This helper converts ISO-2 codes coming from the UI
+    into those labels using pycountry plus a small fuzzy-match fallback.
+    """
+    labels = []
+    lower_map = {c.lower(): c for c in all_countries}
+
+    for code in iso_codes or []:
+        code = (code or "").upper()
+        if not code:
+            continue
+
+        country = pycountry.countries.get(alpha_2=code)
+        if not country:
+            continue
+
+        # Try common_name, official_name, then name
+        candidates = []
+        for attr in ("common_name", "official_name", "name"):
+            val = getattr(country, attr, None)
+            if val:
+                candidates.append(val)
+
+        chosen = None
+        for cand in candidates:
+            key = cand.lower()
+            if key in lower_map:
+                chosen = lower_map[key]
+                break
+
+        if not chosen and candidates:
+            # Fuzzy match as a last resort
+            match = get_close_matches(candidates[0], all_countries, n=1, cutoff=0.7)
+            if match:
+                chosen = match[0]
+
+        if chosen and chosen not in labels:
+            labels.append(chosen)
+
+    return labels
 
 def extract_price_details(price_text: str):
     """
@@ -107,11 +154,13 @@ async def process_country(country_label: str, page) -> List[Dict[str, Any]]:
 
 # --- Main async runner -------------------------------------------------------
 
-async def _run_netflix_async(test_mode: bool = True) -> str:
-    """
-    Scrape Netflix pricing for all countries (or a subset in test mode).
+async def _run_netflix_async(test_mode: bool = True, test_countries=None) -> str:
+    """Scrape Netflix pricing for all countries (or a subset in test mode).
 
-    Returns absolute path to the Excel file.
+    Returns
+    -------
+    str
+        Absolute path to the created Excel file.
     """
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -132,9 +181,16 @@ async def _run_netflix_async(test_mode: bool = True) -> str:
         await page.close()
 
         if test_mode:
-            # Quick sample run
-            countries = all_countries[:8]
             suffix = "_TEST"
+            if test_countries:
+                # Try to honour the specific countries chosen in the UI
+                countries = _iso2_to_netflix_labels(all_countries, test_countries)
+                if not countries:
+                    # Fallback: small fixed sample if mapping failed
+                    countries = all_countries[:8]
+            else:
+                # Old behaviour: just take the first few countries as a demo
+                countries = all_countries[:8]
         else:
             countries = all_countries
             suffix = ""
@@ -155,21 +211,27 @@ async def _run_netflix_async(test_mode: bool = True) -> str:
                 tasks.append(process_country(country, tab))
 
             batch_results = await asyncio.gather(*tasks)
-            for res in batch_results:
-                results.extend(res)
 
-            for p in pages:
-                await p.close()
+            # Close all pages in this batch to avoid hitting limits
+            for tab in pages:
+                await tab.close()
 
+            for r in batch_results:
+                results.extend(r)
+
+        await context.close()
         await browser.close()
 
-    df = pd.DataFrame(results)
-    out_name = f"netflix_pricing_by_country{suffix}.xlsx"
-    out_path = Path(out_name).resolve()
-    df.to_excel(out_path, index=False, engine="openpyxl")
+        if not results:
+            raise RuntimeError("Netflix scraper produced no rows – markup may have changed.")
 
-    print(f"✅ Netflix: saved {out_path}")
-    return str(out_path)
+        df = pd.DataFrame(results)
+        out_name = f"netflix_pricing_by_country{suffix}.xlsx"
+        out_path = Path(out_name).resolve()
+        df.to_excel(out_path, index=False, engine="openpyxl")
+
+        print(f"✅ Netflix: saved {out_path}")
+        return str(out_path)
 
 
 def run_netflix_scraper(test_mode: bool = True) -> str:
