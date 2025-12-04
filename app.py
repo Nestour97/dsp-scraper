@@ -265,7 +265,7 @@ def render_table(excel_path: str, dsp_name: str):
         st.error("File not found – scraper may not have produced an output.")
         return
 
-    st.markdown(f"### 📊 Data explorer – {dsp_name}")
+    st.markdown(f"###  Data explorer – {dsp_name}")
 
     df = pd.read_excel(excel_path)
 
@@ -298,7 +298,7 @@ def render_table(excel_path: str, dsp_name: str):
         data = f.read()
 
     st.download_button(
-        "📥 Download full Excel file",
+        " Download full Excel file",
         data=data,
         file_name=os.path.basename(excel_path),
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -368,7 +368,7 @@ def dsp_panel(dsp_name: str, logo_filename: str, description: str):
     st.write("")
 
     # --- run button ---
-    if st.button(f"🚀 Run {dsp_name} scraper", key=f"run_{dsp_name}"):
+    if st.button(f" Run {dsp_name} scraper", key=f"run_{dsp_name}"):
         excel_path = run_with_progress(
             dsp_name=dsp_name,
             test_mode=test_mode,
@@ -476,3 +476,4 @@ with main_tabs[3]:
         logo_filename="disney_plus_logo.png",
         description="Scrape Disney+ subscription pricing using the Playwright-powered scraper.",
     )
+
