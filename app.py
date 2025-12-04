@@ -1,4 +1,3 @@
-import os
 import sys
 import time
 import subprocess
@@ -11,7 +10,7 @@ import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
-from dsp_scrapers import DSP_OPTIONS, run_scraper
+from dsp_scrapers import DSP_OPTIONS, run_scraper  # your unified scraper
 
 # ---------- PAGE CONFIG ----------
 
@@ -44,7 +43,7 @@ COUNTRY_LABELS.sort()
 # ---------- SESSION STATE ----------
 
 if "results" not in st.session_state:
-    # maps key -> {df, excel, rows, ts}
+    # key -> {df, excel, rows, ts}
     st.session_state["results"] = {}
 
 if "playwright_ready" not in st.session_state:
@@ -56,72 +55,92 @@ def result_key(dsp_name: str, mode_label: str, country_codes: list[str]) -> str:
     return f"{dsp_name}::{mode_label}::{codes_part}"
 
 
-# ---------- STYLE (Sony-ish dark with purple accent) ----------
+# ---------- STYLE (centered logo + animated hero) ----------
 
 st.markdown(
     """
     <style>
     body {
-        background-color: #05060a;
+        background-color: #050509;
     }
     .block-container {
-        padding-top: 1.2rem;
-        padding-bottom: 1.8rem;
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+        max-width: 1200px;
     }
-    .hero-bar {
-        background: linear-gradient(120deg, #05060a 0%, #15162a 45%, #1b1035 100%);
-        border-radius: 18px;
-        padding: 1.2rem 1.6rem;
-        border: 1px solid #24263d;
-        color: #f6f6ff;
-        box-shadow: 0 18px 40px rgba(0,0,0,0.75);
+
+    /* animated gradient behind header */
+    @keyframes heroGradient {
+        0%   { background-position: 0% 50%; }
+        50%  { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
     }
-    .hero-title {
-        font-size: 2rem;
+
+    .header-wrapper {
+        text-align: center;
+        margin-bottom: 1.4rem;
+        padding: 1.2rem 1.4rem 1.3rem 1.4rem;
+        border-radius: 20px;
+        border: 1px solid #24263b;
+        background: linear-gradient(120deg, #101021, #1a0f3a, #101021);
+        background-size: 200% 200%;
+        animation: heroGradient 18s ease-in-out infinite;
+        box-shadow: 0 22px 50px rgba(0,0,0,0.85);
+    }
+    .header-pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.16rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        background: rgba(0,0,0,0.25);
+        color: #f5f5ff;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 0.4rem;
+    }
+    .header-title {
+        font-size: 2.1rem;
         font-weight: 700;
-        letter-spacing: 0.02em;
-        margin-bottom: 0.3rem;
+        letter-spacing: 0.03em;
+        margin-bottom: 0.25rem;
+        color: #ffffff;
     }
-    .hero-sub {
-        font-size: 0.95rem;
-        color: #c8c9ff;
+    .header-subtitle {
+        font-size: 0.96rem;
+        color: #cbcbea;
+        max-width: 680px;
+        margin: 0.1rem auto 0 auto;
     }
-    .side-note {
-        font-size: 0.86rem;
-        color: #b4b4c8;
-    }
-    .info-card {
-        background-color: #050509;
-        border-radius: 14px;
-        padding: 0.9rem 1.2rem;
-        border: 1px solid #2a2b3f;
+    .how-card {
+        background-color: #06060b;
+        border-radius: 16px;
+        padding: 0.85rem 1.1rem;
+        border: 1px solid #27283b;
         color: #f3f3f3;
+        margin-bottom: 1rem;
     }
-    .info-card ul {
-        margin-top: 0.4rem;
+    .how-card ul {
+        margin-top: 0.3rem;
         margin-bottom: 0;
+        padding-left: 1.1rem;
     }
-    .info-card li {
+    .how-card li {
         font-size: 0.9rem;
     }
     .section-heading {
         font-size: 1.25rem;
         font-weight: 600;
-        margin-top: 1rem;
+        margin-top: 0.7rem;
         margin-bottom: 0.35rem;
+        color: #f5f5ff;
     }
-    .purple-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.35rem;
-        padding: 0.2rem 0.6rem;
-        border-radius: 999px;
-        font-size: 0.78rem;
-        background: linear-gradient(135deg, #7f5af0, #ff6bcb);
-        color: #fff;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
+    .side-note {
+        font-size: 0.86rem;
+        color: #b4b4c8;
     }
+
     .ag-theme-streamlit .ag-root-wrapper {
         border-radius: 14px;
         border: 1px solid #444659;
@@ -137,6 +156,7 @@ st.markdown(
     .ag-theme-streamlit .ag-row-odd {
         background-color: #05050b;
     }
+
     .run-button button {
         border-radius: 999px !important;
         background: linear-gradient(135deg, #7f5af0, #ff6bcb) !important;
@@ -149,10 +169,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---------- UTILITIES ----------
+# ---------- UTILS ----------
 
 
 def ensure_playwright_for_disney() -> None:
+    """Install Playwright Chromium browser if needed (no-op after first time)."""
     if st.session_state["playwright_ready"]:
         return
     try:
@@ -209,7 +230,7 @@ def render_powerbi_grid(df: pd.DataFrame, excel_path: str) -> None:
     st.download_button(
         "📥 Download Excel extract",
         data=data,
-        file_name=os.path.basename(excel_path),
+        file_name=Path(excel_path).name,
         mime=(
             "application/vnd.openxmlformats-officedocument."
             "spreadsheetml.sheet"
@@ -278,6 +299,7 @@ def show_cached_result(dsp_name: str, mode_label: str, codes: list[str]) -> None
 
 
 def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
+    """Run scraper in background thread and show continuous progress + ETA."""
     test_mode = mode_label.startswith("Test")
 
     if dsp_name == "Disney+":
@@ -291,7 +313,7 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
     start = time.time()
 
     def run_worker():
-        # call into dsp_scrapers.run_scraper (which routes to Apple/Disney)
+        # call into dsp_scrapers.run_scraper
         return run_scraper(dsp_name, test_mode, codes)
 
     with ThreadPoolExecutor(max_workers=1) as ex:
@@ -350,7 +372,7 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
                 pass
 
 
-# ---------- SIDEBAR (mode + country filter) ----------
+# ---------- SIDEBAR (mode + ONE search/multiselect) ----------
 
 with st.sidebar:
     st.markdown("### Mode")
@@ -367,25 +389,14 @@ with st.sidebar:
     if mode_label.startswith("Test"):
         st.markdown("#### Countries for test runs")
 
-        # This is the separate search bar you can type into directly
-        filter_query = st.text_input(
-            "Filter countries",
-            placeholder="Type to filter (e.g. 'Brazil', 'US')",
-        )
-
-        if filter_query:
-            options = [
-                label
-                for label in COUNTRY_LABELS
-                if filter_query.lower() in label.lower()
-            ]
-        else:
-            options = COUNTRY_LABELS
-
+        # single multiselect with built-in search – type to search, select, keep typing
         selected_labels = st.multiselect(
-            "",
-            options,
-            help="Select one or more countries to include in the test run.",
+            "Start typing a country name or code",
+            COUNTRY_LABELS,
+            help=(
+                "Type to filter the list, press Enter or click to add. "
+                "You can keep typing to add multiple countries."
+            ),
         )
         selected_codes = [LABEL_TO_CODE[l] for l in selected_labels]
 
@@ -395,49 +406,36 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-# ---------- HERO BAR ----------
+# ---------- CENTERED HEADER (logo → title → description) ----------
 
-hero_col1, hero_col2 = st.columns([3, 1.1])
-
-with hero_col1:
-    st.markdown(
-        """
-        <div class="hero-bar">
-            <div class="purple-pill">DSP analytics tool</div>
-            <div style="margin-top:0.5rem;">
-                <div class="hero-title">DSP Price Scraper</div>
-                <div class="hero-sub">
-                    Central hub for Apple Music & Disney+ pricing. 
-                    Run scrapes on demand, explore results in a Power BI-style grid,
-                    and export straight to Excel.
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with hero_col2:
+logo_row = st.columns([1, 1, 1])
+with logo_row[1]:
     if SONY_LOGO_PATH.is_file():
-        st.image(str(SONY_LOGO_PATH), caption="Sony-flavoured UI", use_column_width=True)
-    else:
-        st.markdown(
-            "<p style='text-align:right; font-size:0.85rem; color:#888;'>"
-            "Add <code>sony_logo.png</code> in the repo root to show the logo."
-            "</p>",
-            unsafe_allow_html=True,
-        )
+        st.image(str(SONY_LOGO_PATH), width=120)
 
-st.markdown("")
 st.markdown(
     """
-    <div class="info-card">
+    <div class="header-wrapper">
+        <div class="header-pill">DSP analytics tool</div>
+        <div class="header-title">DSP Price Scraper</div>
+        <p class="header-subtitle">
+            Central hub for Apple Music &amp; Disney+ pricing. Run scrapes on demand,
+            explore the results in a Power BI-style grid, and export straight to Excel.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="how-card">
         <b>How it works</b>
         <ul>
             <li>Select <b>Apple Music</b> or <b>Disney+</b> in the tabs below.</li>
-            <li>Use the sidebar to pick <b>Full</b> or <b>Test</b> and, in Test mode, choose countries via the filter.</li>
+            <li>Use the sidebar to pick <b>Full</b> or <b>Test</b>. In Test mode you can choose multiple countries from the search box.</li>
             <li>Click <b>Run scraper</b> to launch the underlying Python script.</li>
-            <li>Track progress via a live percentage and ETA.</li>
+            <li>Track progress with a live percentage, elapsed time and estimated remaining time.</li>
             <li>Explore and download the results from the interactive table.</li>
         </ul>
     </div>
