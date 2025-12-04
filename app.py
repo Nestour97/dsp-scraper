@@ -10,9 +10,9 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 from dsp_scrapers import run_scraper
 
-# ---------- THEME & PAGE CONFIG ----------
-
 SONY_RED = "#e31c23"
+
+# ---------- PAGE CONFIG ----------
 
 st.set_page_config(
     page_title="DSP Price Scraper",
@@ -169,6 +169,7 @@ st.markdown(
 
 # ---------- HELPERS ----------
 
+
 def centered_sony_logo():
     logo_path = Path("sony_logo.png")
     if not logo_path.is_file():
@@ -203,7 +204,8 @@ def run_with_progress(dsp_name: str, test_mode: bool):
     thread.start()
 
     start = time.time()
-    expected = 90 if test_mode else 600  # very rough guess
+    # crude guess: tests are quick, full runs slower
+    expected = 90 if test_mode else 600
 
     while thread.is_alive():
         elapsed = time.time() - start
@@ -275,7 +277,7 @@ def render_table(excel_path: str, dsp_name: str):
 
 def dsp_panel(dsp_name: str, logo_filename: str, description: str):
     """
-    Shared layout for each leaf DSP scraper panel.
+    Shared layout for each DSP scraper panel.
     """
     col_logo, col_text = st.columns([1, 5])
 
