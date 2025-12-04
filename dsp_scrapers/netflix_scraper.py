@@ -234,10 +234,18 @@ async def _run_netflix_async(test_mode: bool = True, test_countries=None) -> str
         return str(out_path)
 
 
-def run_netflix_scraper(test_mode: bool = True) -> str:
-    """
-    Public wrapper for the Streamlit app.
+def run_netflix_scraper(test_mode: bool = True, test_countries=None) -> str:
+    """Public wrapper used by the Streamlit app.
 
-    Returns absolute path to the Netflix Excel file.
+    Parameters
+    ----------
+    test_mode:
+        If True, run in test mode (usually fewer countries).
+    test_countries:
+        Optional list of ISO alpha-2 codes (e.g. ["GB", "US"]) used
+        only in test mode.
     """
-    return asyncio.run(_run_netflix_async(test_mode=test_mode))
+    return asyncio.run(
+        _run_netflix_async(test_mode=test_mode, test_countries=test_countries)
+    )
+
