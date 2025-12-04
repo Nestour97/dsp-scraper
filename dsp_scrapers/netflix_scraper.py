@@ -172,10 +172,43 @@ async def _run_netflix_async(test_mode: bool = True) -> str:
     return str(out_path)
 
 
-def run_netflix_scraper(test_mode: bool = True) -> str:
-    """
-    Public wrapper for the Streamlit app.
+import pycountry
+# ... keep your other imports
 
-    Returns absolute path to the Netflix Excel file.
+def _country_name_to_iso2(name: str) -> str:
+    """Best-effort map from 'Korea, Republic of' -> 'KR' etc."""
+    try:
+        return pycountry.countries.lookup(name).alpha_2.upper()
+    except Exception:
+        return ""
+
+def run_netflix_scraper(test_mode: bool = True, test_countries=None) -> str:
     """
-    return asyncio.run(_run_netflix_async(test_mode=test_mode))
+    Wrapper used by the Streamlit app.
+
+    test_mode = True  -> we post-filter to the selected countries
+    test_mode = False -> full list
+    test_countries    -> list of ISO alpha-2 codes from the UI (e.g. ["KR"])
+    """
+    # ---- existing scraping logic ----
+    # This part should be whatever you currently run to produce the full file.
+    # At the end you have a DataFrame `df_full` and you save it once.
+
+    df_full = scrape_all_netflix_countries()   # <-- this represents your existing logic
+    out_name = "netflix_pricing_by_country.xlsx"
+    df_full.to_excel(out_name, index=False)
+
+    # ---- new test filtering ----
+    # If not in Test mode or no UI countries provided, just return full file.
+    if not test_mode or not test_countries:
+        return out_name
+
+    wanted = {c.upper() for c in test_countries}
+
+    df = df_full.copy()
+    df["iso2"] = df["Country"].apply(_country_name_to_iso2)
+    df = df[df["iso2"].isin(wanted)].drop(columns=["iso2"])
+
+    test_out = "netflix_pricing_by_country_TEST.xlsx"
+    df.to_excel(test_out, index=False)
+    return test_out
