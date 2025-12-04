@@ -3,7 +3,7 @@
 from .apple_music_scraper import run_apple_music_scraper
 from .disney_plus_scraper import run_disney_scraper
 from .spotify_scraper import run_spotify_scraper
-from .icloud_plus_prices import run_icloud_plus_scraper  # adjust name if different
+from .icloud_plus_scraper import run_icloud_plus_scraper  # adjust name if different
 from .netflix_scraper import run_netflix_scraper         # adjust name if you wrapped it
 
 DSP_OPTIONS = {
