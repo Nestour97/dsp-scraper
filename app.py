@@ -305,15 +305,36 @@ def dsp_panel(dsp_name: str, logo_filename: str, description: str):
     )
     test_mode = mode.startswith("Test")
 
+    # Optional test-country selection (UI only, for now)
+    selected_codes = []
+    if test_mode:
+        st.markdown("##### Countries for test runs (optional)")
+        selected_labels = st.multiselect(
+            "Start typing a country name or code",
+            options=COUNTRY_OPTIONS,
+            default=st.session_state.get(f"test_countries_{dsp_name}", []),
+            label_visibility="collapsed",
+        )
+        st.session_state[f"test_countries_{dsp_name}"] = selected_labels
+        selected_codes = _extract_alpha2(selected_labels)
+
+        if selected_codes:
+            st.caption(
+                "For now the scrapers still use their built-in quick-test markets. "
+                "These selected countries are being stored and can be wired up "
+                "to the back-end logic in a later iteration."
+            )
+
     st.write("")
     if st.button(f"🚀 Run {dsp_name} scraper", key=f"run_{dsp_name}"):
+        # You already have the selected_codes list if you want to hook into
+        # Spotify's TEST_MARKETS or similar later.
         excel_path = run_with_progress(dsp_name=dsp_name, test_mode=test_mode)
         if excel_path:
             st.session_state["last_result"] = {
                 "dsp_name": dsp_name,
                 "excel_path": excel_path,
             }
-
 
 # ---------- SESSION STATE ----------
 
@@ -417,3 +438,4 @@ if last_result and last_result.get("excel_path"):
     )
 else:
     st.info("Run a scraper from the tabs above to see the results here.")
+
