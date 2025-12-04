@@ -33,7 +33,7 @@ DSP_LOGOS = {
     # e.g. "Spotify": Path("spotify_logo.png"),
 }
 
-# ---------- COUNTRY OPTIONS (for Test mode) ----------
+# ---------- COUNTRY OPTIONS ----------
 
 COUNTRY_LABELS: list[str] = []
 LABEL_TO_CODE: dict[str, str] = {}
@@ -50,7 +50,6 @@ COUNTRY_LABELS.sort()
 # ---------- SESSION STATE ----------
 
 if "results" not in st.session_state:
-    # key -> {df, excel, rows, ts}
     st.session_state["results"] = {}
 
 if "playwright_ready" not in st.session_state:
@@ -72,22 +71,20 @@ st.markdown(
         color: #f5f5f5;
     }
 
+    /* hide sidebar completely */
+    [data-testid="stSidebar"] {
+        display: none;
+    }
+
     .block-container {
         padding-top: 2rem;
         padding-bottom: 2.5rem;
-        padding-left: 1.5rem;
-        padding-right: 1.5rem;
+        padding-left: 2.5rem;
+        padding-right: 2.5rem;
         max-width: 1700px;
         margin-left: auto;
         margin-right: auto;
         background-color: #000000;
-    }
-
-    [data-testid="stSidebar"] {
-        background-color: #050505;
-    }
-    [data-testid="stSidebar"] * {
-        color: #f5f5f5 !important;
     }
 
     h1, h2, h3, h4, h5, h6, label, p {
@@ -159,9 +156,13 @@ st.markdown(
         color: #cccccc;
     }
 
-    /* Center the DSP tabs */
+    /* center DSP tabs and enlarge labels */
     .stTabs [role="tablist"] {
         justify-content: center;
+    }
+    .stTabs [role="tab"] p {
+        font-size: 1.02rem;
+        font-weight: 600;
     }
 
     /* AgGrid styling */
@@ -181,8 +182,19 @@ st.markdown(
         background-color: #020202;
     }
 
-    /* Buttons: Sony red pill */
+    /* Primary buttons (run buttons) */
     div.stButton > button {
+        border-radius: 999px !important;
+        background: #e31c23 !important;
+        border: none !important;
+        color: white !important;
+        font-weight: 600 !important;
+        padding-left: 1.3rem !important;
+        padding-right: 1.3rem !important;
+    }
+
+    /* Download button in Sony red */
+    .stDownloadButton > button {
         border-radius: 999px !important;
         background: #e31c23 !important;
         border: none !important;
@@ -284,7 +296,6 @@ def estimate_country_count(dsp_name: str, mode_label: str, codes: list[str]) -> 
     if codes:
         return len(codes)
 
-    # rough defaults for "Full" runs
     if dsp_name == "Apple Music":
         return 230
     if dsp_name == "Disney+":
@@ -412,66 +423,7 @@ def run_and_render(dsp_name: str, mode_label: str, codes: list[str]) -> None:
                 pass
 
 
-def country_checkbox_selector(dsp_name: str) -> list[str]:
-    """
-    Country selector that behaves like a searchable tick list,
-    but in two columns and with a shorter visible list.
-    """
-    prefix = f"{dsp_name}_countries"
-    search = st.text_input(
-        "Search country name or code",
-        key=f"{prefix}_search",
-        help="Type to filter the list below, then tick one or more countries.",
-    )
-
-    all_labels = COUNTRY_LABELS
-    if search:
-        labels = [l for l in all_labels if search.lower() in l.lower()]
-    else:
-        labels = all_labels
-
-    sel_key = f"{prefix}_selected"
-    if sel_key not in st.session_state:
-        st.session_state[sel_key] = []
-
-    selected_set = set(st.session_state[sel_key])
-
-    max_show = 24  # keep visible list compact
-    labels_to_show = labels[:max_show]
-
-    st.markdown(
-        f"<p class='side-note'>Showing {len(labels_to_show)} of "
-        f"{len(labels)} matches · {len(selected_set)} selected</p>",
-        unsafe_allow_html=True,
-    )
-
-    col1, col2 = st.columns(2)
-    for i, label in enumerate(labels_to_show):
-        col = col1 if i % 2 == 0 else col2
-        with col:
-            key = f"{prefix}_{label}"
-            checked = label in selected_set
-            new_checked = st.checkbox(label, value=checked, key=key)
-            if new_checked and not checked:
-                selected_set.add(label)
-            elif not new_checked and checked:
-                selected_set.remove(label)
-
-    st.session_state[sel_key] = sorted(selected_set)
-    return [LABEL_TO_CODE[l] for l in st.session_state[sel_key]]
-
-
-# ---------- SIMPLE SIDEBAR TEXT ----------
-
-with st.sidebar:
-    st.markdown("### DSP Price Scraper")
-    st.markdown(
-        "<p class='side-note'>Run global pricing scrapes for multiple DSPs. "
-        "Use the controls in each tab to choose mode and countries.</p>",
-        unsafe_allow_html=True,
-    )
-
-# ---------- SONY HEADER (perfectly centred) ----------
+# ---------- HEADER ----------
 
 centered_sony_logo()
 
@@ -496,7 +448,7 @@ st.markdown(
         <ul>
             <li>Select <b>Apple Music</b>, <b>Disney+</b>, or another DSP in the tabs below.</li>
             <li>In each tab, choose <b>Full</b> for all countries or <b>Test</b> to target specific markets.</li>
-            <li>In Test mode, use the search box and tick countries from the list.</li>
+            <li>In Test mode, use the search box and select countries from the dropdown.</li>
             <li>Click <b>Run scraper</b> to launch the underlying Python script for that DSP.</li>
             <li>Track progress with a live percentage, elapsed time, and estimated remaining time.</li>
             <li>Explore and download the results from the interactive table.</li>
@@ -508,7 +460,7 @@ st.markdown(
 
 st.markdown('<div class="section-heading">Choose your DSP</div>', unsafe_allow_html=True)
 
-# ---------- MAIN TABS (centered, per-DSP controls) ----------
+# ---------- MAIN TABS ----------
 
 dsp_names = list(DSP_OPTIONS.keys())
 tabs = st.tabs(dsp_names)
@@ -522,8 +474,9 @@ for dsp_name, tab in zip(dsp_names, tabs):
         with head_left:
             if logo_path is not None:
                 logo(logo_path, width=80, alt=dsp_name)
+            # bigger DSP name
             st.markdown(
-                f"<h4 style='margin-bottom:0.3rem;'>{dsp_name} pricing</h4>",
+                f"<h3 style='margin-bottom:0.3rem;'>{dsp_name} pricing</h3>",
                 unsafe_allow_html=True,
             )
             st.markdown(
@@ -541,7 +494,16 @@ for dsp_name, tab in zip(dsp_names, tabs):
             )
 
             if mode_label == "Test":
-                selected_codes = country_checkbox_selector(dsp_name)
+                selected_labels = st.multiselect(
+                    "Countries (type to search)",
+                    COUNTRY_LABELS,
+                    key=f"countries_{dsp_name}",
+                    help=(
+                        "Start typing a country name or code, then press Enter or "
+                        "click to add. You can select multiple countries."
+                    ),
+                )
+                selected_codes = [LABEL_TO_CODE[l] for l in selected_labels]
             else:
                 selected_codes = []
 
