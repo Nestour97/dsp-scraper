@@ -671,35 +671,34 @@ async def run():
         with pd.ExcelWriter(xlsx_out, engine="openpyxl") as w:
             df.to_excel(w, index=False)
 
-        log(f"\n🎉 Done! Saved {csv_out} and {xlsx_out} | Rows: {len(df)} Countries: {df['Country Alpha-2'].nunique()}")
-        files.download(xlsx_out)
-        files.download(csv_out)
+        log(
+            f"\n🎉 Done! Saved {csv_out} and {xlsx_out} | "
+            f"Rows: {len(df)} Countries: {df['Country Alpha-2'].nunique()}"
+        )
+
+        # Return the absolute path to the Excel file for the caller (Streamlit)
+        from pathlib import Path
+        return str(Path(xlsx_out).resolve())
+
 
 
 # ---------------------------------------------------------------------------
 # Streamlit wrapper
 # ---------------------------------------------------------------------------
 import asyncio
-from pathlib import Path
 
 async def _run_spotify_async(test_mode: bool = True) -> str:
     """
-    Internal async runner. Assumes there is a global TEST_MODE flag and an
-    `async def run()` defined earlier that writes the Excel file.
+    Internal async runner. Uses global TEST_MODE and the async `run()` above.
     """
     global TEST_MODE
     TEST_MODE = bool(test_mode)
-
-    await run()  # this is your existing async main function
-
-    base = f"spotify_cleaned_playwright{'_TEST' if TEST_MODE else ''}"
-    xlsx_name = f"{base}.xlsx"
-    return str(Path(xlsx_name).resolve())
+    # run() now returns the Excel path
+    return await run()
 
 def run_spotify_scraper(test_mode: bool = True) -> str:
     """
     Public function used by the Streamlit app.
-
     Returns the absolute path to the Spotify Excel file.
     """
     return asyncio.run(_run_spotify_async(test_mode=test_mode))
