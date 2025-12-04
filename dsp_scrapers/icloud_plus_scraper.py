@@ -1,5 +1,4 @@
 # dsp_scrapers/icloud_plus_scraper.py
-
 import math
 import re
 from pathlib import Path
@@ -8,6 +7,8 @@ from typing import Any, Dict, List
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+import pycountry
+
 
 # --- Constants ---------------------------------------------------------------
 
@@ -153,36 +154,70 @@ def parse_all_rows(html: str) -> List[Dict[str, Any]]:
 
 # --- Public API --------------------------------------------------------------
 
-def run_icloud_plus_scraper(test_mode: bool = True) -> str:
-    """
-    Run the iCloud+ scraper.
+def run_icloud_plus_scraper(test_mode: bool = True, test_countries=None) -> str:
+    """Run the iCloud+ scraper.
 
-    test_mode=True  -> keep a small sample of countries
-    test_mode=False -> return all countries from the article
-
-    Returns
-    -------
-    str
-        Absolute path to the created Excel file.
+    Parameters
+    ----------
+    test_mode:
+        True  -> return only a subset of countries
+        False -> return all countries from the article
+    test_countries:
+        Optional list of ISO alpha-2 codes (e.g. ["GB", "US"]) used
+        in test mode.  If None in test mode, we fall back to the
+        built-in TEST_COUNTRIES sample.
     """
     html = fetch_html()
     rows = parse_all_rows(html)
     if not rows:
-        raise RuntimeError("iCloud+ scraper parsed 0 rows – Apple may have changed the page.")
+        raise RuntimeError(
+            "iCloud+ scraper parsed 0 rows – Apple may have changed the page."
+        )
 
-    df = pd.DataFrame(rows, columns=["Country", "Currency", "Plan", "Price", "Price_Display"])
+    df = pd.DataFrame(
+        rows,
+        columns=["Country", "Currency", "Plan", "Price", "Price_Display"],
+    )
 
     # Order plans nicely
     try:
-        plan_order = pd.CategoricalDtype(["50 GB", "200 GB", "2 TB", "6 TB", "12 TB"], ordered=True)
+        plan_order = pd.CategoricalDtype(
+            ["50 GB", "200 GB", "2 TB", "6 TB", "12 TB"],
+            ordered=True,
+        )
         df["Plan"] = df["Plan"].astype(plan_order)
     except Exception:
+        # If anything goes wrong we still keep the data
         pass
 
     df.sort_values(["Country", "Plan"], inplace=True, kind="stable", ignore_index=True)
 
     if test_mode:
-        df = df[df["Country"].isin(TEST_COUNTRIES)].copy()
+        # If the UI provided specific ISO-2 codes, respect those first
+        if test_countries:
+            wanted_names = set()
+            for code in test_countries:
+                code = (code or "").upper()
+                if not code:
+                    continue
+                country = pycountry.countries.get(alpha_2=code)
+                if not country:
+                    continue
+
+                # Try several name variants so we match the article text
+                for attr in ("common_name", "official_name", "name"):
+                    val = getattr(country, attr, None)
+                    if val:
+                        wanted_names.add(val.lower())
+
+            if wanted_names:
+                df = df[df["Country"].str.lower().isin(wanted_names)].copy()
+            else:
+                # Fallback to the previous behaviour if mapping failed
+                df = df[df["Country"].isin(TEST_COUNTRIES)].copy()
+        else:
+            # Old behaviour: keep just a small demo subset
+            df = df[df["Country"].isin(TEST_COUNTRIES)].copy()
 
     suffix = "_TEST" if test_mode else "_all"
     out_path = Path(f"{OUT_BASENAME}{suffix}.xlsx").resolve()
