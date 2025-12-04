@@ -201,10 +201,7 @@ def centered_sony_logo():
     )
 
 
-def run_with_progress(dsp_name: str, test_mode: bool):
-    """
-    Run a scraper in a background thread and show a smooth progress bar + ETA.
-    """
+def run_with_progress(dsp_name: str, test_mode: bool, test_countries=None):
     status_placeholder = st.empty()
     progress = st.progress(0, text=f"Starting {dsp_name} scraper…")
 
@@ -212,9 +209,15 @@ def run_with_progress(dsp_name: str, test_mode: bool):
 
     def worker():
         try:
-            result["path"] = run_scraper(dsp_name=dsp_name, test_mode=test_mode)
+            result["path"] = run_scraper(
+                dsp_name=dsp_name,
+                test_mode=test_mode,
+                test_countries=test_countries,  # NEW
+            )
         except Exception as e:
             result["error"] = str(e)
+
+    # (rest of the function stays the same)
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
@@ -292,25 +295,26 @@ def render_table(excel_path: str, dsp_name: str):
 
 
 def dsp_panel(dsp_name: str, logo_filename: str, description: str):
-    """
-    Shared layout for each DSP scraper panel.
-    """
+    # --- session state for per-DSP results ---
+    if "dsp_results" not in st.session_state:
+        st.session_state["dsp_results"] = {}
+    results_dict = st.session_state["dsp_results"]
+
+    # --- header row: logo + text ---
     col_logo, col_text = st.columns([1, 5])
 
     with col_logo:
-        logo_path = Path(logo_filename)
-        if logo_path.is_file():
-            st.image(str(logo_path), width=56)
-        else:
-            st.write("")
+        if os.path.exists(logo_filename):
+            st.image(logo_filename, width=56)
 
     with col_text:
         st.markdown(
             f"#### {dsp_name}\n"
-            f"<p style='color:#c7c7c7; margin-bottom:0.6rem;'>{description}</p>",
+            f"<p class='small-text'>{description}</p>",
             unsafe_allow_html=True,
         )
 
+    # --- mode selector ---
     st.markdown("##### Mode")
     mode = st.radio(
         "Mode",
@@ -321,7 +325,7 @@ def dsp_panel(dsp_name: str, logo_filename: str, description: str):
     )
     test_mode = mode.startswith("Test")
 
-    # Optional test-country selection (UI only, for now)
+    # --- test countries multiselect ---
     selected_codes = []
     if test_mode:
         st.markdown("##### Countries for test runs (optional)")
@@ -334,23 +338,24 @@ def dsp_panel(dsp_name: str, logo_filename: str, description: str):
         st.session_state[f"test_countries_{dsp_name}"] = selected_labels
         selected_codes = _extract_alpha2(selected_labels)
 
-        if selected_codes:
-            st.caption(
-                "For now the scrapers still use their built-in quick-test markets. "
-                "These selected countries are being stored and can be wired up "
-                "to the back-end logic in a later iteration."
-            )
-
     st.write("")
+
+    # --- run button ---
     if st.button(f"🚀 Run {dsp_name} scraper", key=f"run_{dsp_name}"):
-        # You already have the selected_codes list if you want to hook into
-        # Spotify's TEST_MARKETS or similar later.
-        excel_path = run_with_progress(dsp_name=dsp_name, test_mode=test_mode)
+        excel_path = run_with_progress(
+            dsp_name=dsp_name,
+            test_mode=test_mode,
+            test_countries=selected_codes,
+        )
         if excel_path:
-            st.session_state["last_result"] = {
-                "dsp_name": dsp_name,
-                "excel_path": excel_path,
-            }
+            # store *per DSP* result
+            results_dict[dsp_name] = excel_path
+
+    # --- render last result for this DSP only ---
+    if dsp_name in results_dict:
+        st.markdown("---")
+        render_table(results_dict[dsp_name], dsp_name)
+
 
 # ---------- SESSION STATE ----------
 
@@ -443,16 +448,17 @@ with main_tabs[3]:
 
 # ---------- DATA EXPLORER SECTION ----------
 
-st.markdown("---")
+# st.markdown("---")
 
-last_result = st.session_state.get("last_result")
+# last_result = st.session_state.get("last_result")
 
-if last_result and last_result.get("excel_path"):
-    render_table(
-        excel_path=last_result["excel_path"],
-        dsp_name=last_result["dsp_name"],
-    )
-else:
-    st.info("Run a scraper from the tabs above to see the results here.")
+# if last_result and last_result.get("excel_path"):
+#     render_table(
+#         excel_path=last_result["excel_path"],
+#         dsp_name=last_result["dsp_name"],
+#     )
+# else:
+#     st.info("Run a scraper from the tabs above to see the results here.")
+
 
 
