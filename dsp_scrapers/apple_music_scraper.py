@@ -1146,23 +1146,28 @@ def run_scraper(country_codes_override=None):
     return out_name
 
 
-def run_apple_music_scraper(test_mode=True, country_codes=None):
+def run_apple_music_scraper(test_mode: bool = True, test_countries=None) -> str:
     """
     Wrapper used by the web app.
 
-    test_mode = True  -> behaves like your TEST_MODE run
+    test_mode = True  -> behaves like TEST_MODE run
     test_mode = False -> full all-countries run
-
-    If country_codes is provided (list of ISO-2 codes), only those countries
-    are scraped (regardless of test_mode).
+    test_countries    -> optional list of ISO alpha-2 codes (e.g. ["GB", "FR"])
     """
-    global TEST_MODE
+    global TEST_MODE, TEST_COUNTRIES
+
     TEST_MODE = bool(test_mode)
 
+    # If we’re in Test mode and the UI supplied a list, override TEST_COUNTRIES
+    if TEST_MODE and test_countries:
+        TEST_COUNTRIES = [c.upper() for c in test_countries]
+        print(f"[APPLE MUSIC] UI-driven test countries: {TEST_COUNTRIES}")
+
     start = time.time()
-    out_name = run_scraper(country_codes_override=country_codes)
+    run_scraper()
     print(f"[APPLE MUSIC] Finished in {round(time.time() - start, 2)}s")
 
+    out_name = "apple_music_plans_TEST.xlsx" if TEST_MODE else "apple_music_plans_all.xlsx"
     return out_name
 
 
