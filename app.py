@@ -45,7 +45,7 @@ SONY_RED = "#e31c23"
 
 st.set_page_config(
     page_title="DSP Price Scraper",
-    page_icon="🎧",
+    page_icon="sony_logo.png",
     layout="wide",
 )
 
@@ -476,4 +476,5 @@ with main_tabs[3]:
         logo_filename="disney_plus_logo.png",
         description="Scrape Disney+ subscription pricing using the Playwright-powered scraper.",
     )
+
 
