@@ -3,10 +3,50 @@ import time
 import threading
 import base64
 from pathlib import Path
+import subprocess
+import sys
 
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+
+import pycountry
+
+
+# --- Ensure Playwright browsers are installed (Spotify / Netflix / Disney+ / Apple Music) ---
+def ensure_playwright_chromium():
+    """
+    On Streamlit Cloud we can't run `playwright install` manually.
+    This checks for a cached Chromium browser and installs it if missing.
+    """
+    cache_dir = Path.home() / ".cache" / "ms-playwright"
+    has_chromium = False
+
+    try:
+        if cache_dir.exists():
+            for child in cache_dir.iterdir():
+                if child.is_dir() and "chromium" in child.name:
+                    has_chromium = True
+                    break
+    except Exception:
+        # If the check fails for any reason, fall back to trying install.
+        pass
+
+    if not has_chromium:
+        try:
+            print("[bootstrap] Installing Playwright Chromium browser…", flush=True)
+            subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                check=True,
+            )
+            print("[bootstrap] Playwright Chromium install finished.", flush=True)
+        except Exception as e:
+            # Don't kill the app; the scrapers will still show a clear error if this fails.
+            print(f"[bootstrap] WARNING: Playwright browser install failed: {e}", flush=True)
+
+
+# Run once when the app script starts
+ensure_playwright_chromium()
 
 from dsp_scrapers import run_scraper
 
@@ -476,5 +516,6 @@ with main_tabs[3]:
         logo_filename="disney_plus_logo.png",
         description="Scrape Disney+ subscription pricing using the Playwright-powered scraper.",
     )
+
 
 
