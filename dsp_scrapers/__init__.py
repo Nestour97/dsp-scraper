@@ -8,6 +8,7 @@ correct scraper function and passes through the test-mode arguments.
 """
 
 from .apple_music_scraper import run_apple_music_scraper
+from .apple_one_scraper import run_apple_one_scraper
 from .disney_plus_scraper import run_disney_scraper
 from .spotify_scraper import run_spotify_scraper
 from .icloud_plus_scraper import run_icloud_plus_scraper
@@ -17,10 +18,20 @@ from .netflix_scraper import run_netflix_scraper
 # The keys here must match the labels used in the Streamlit UI
 DSP_OPTIONS = {
     "Apple Music": "apple_music",
+    "Apple One": "apple_one",
     "iCloud+": "icloud_plus",
     "Spotify": "spotify",
     "Netflix": "netflix",
     "Disney+": "disney",
+}
+
+# Case-insensitive lookup to avoid "Unknown DSP" errors from small variations
+NORMALIZED_OPTIONS = {name.casefold(): kind for name, kind in DSP_OPTIONS.items()}
+DSP_ALIASES = {
+    "appleone": "apple_one",
+    "apple-one": "apple_one",
+    "apple1": "apple_one",
+    "icloudplus": "icloud_plus",
 }
 
 
@@ -38,13 +49,22 @@ def run_scraper(dsp_name: str, test_mode: bool, test_countries=None) -> str:
         that should be used *only* in test mode.  When None, each scraper
         falls back to its own built-in test selection.
     """
-    kind = DSP_OPTIONS.get(dsp_name)
+    normalized = (dsp_name or "").strip().casefold()
+    kind = NORMALIZED_OPTIONS.get(normalized) or DSP_ALIASES.get(normalized)
     if not kind:
-        raise ValueError(f"Unknown DSP name: {dsp_name!r}")
+        valid = ", ".join(DSP_OPTIONS.keys())
+        raise ValueError(f"Unknown DSP name: {dsp_name!r}. Valid options: {valid}")
 
     # Apple Music: fully honours test_countries
     if kind == "apple_music":
         return run_apple_music_scraper(
+            test_mode=test_mode,
+            test_countries=test_countries,
+        )
+
+    # Apple One: honours test_countries in test mode
+    if kind == "apple_one":
+        return run_apple_one_scraper(
             test_mode=test_mode,
             test_countries=test_countries,
         )
