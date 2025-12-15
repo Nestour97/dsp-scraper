@@ -10,9 +10,6 @@ import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
-import pycountry
-
-
 # --- Ensure Playwright browsers are installed (Spotify / Netflix / Disney+ / Apple Music) ---
 def ensure_playwright_chromium():
     """
@@ -57,6 +54,7 @@ import pycountry
 # -------------------------------------------------------------------
 FULL_RESULT_FILES = {
     "Apple Music": "apple_music_plans_all.xlsx",
+    "Apple One": "apple_one_pricing_all.xlsx",
     "iCloud+": "icloud_plus_pricing_all.xlsx",
     "Spotify": "spotify_cleaned_playwright.xlsx",
     "Netflix": "netflix_pricing_by_country.xlsx",
@@ -442,7 +440,7 @@ st.markdown(
     <div class="header-wrapper">
         <div class="header-title">DSP PRICE SCRAPER</div>
         <p class="header-subtitle">
-            Central hub for Apple Music, iCloud+, Spotify, Netflix &amp; Disney+ pricing.
+            Central hub for Apple Music, Apple One, iCloud+, Spotify, Netflix &amp; Disney+ pricing.
             Run scrapes on demand, explore the results in a Power BI-style grid,
             and export straight to Excel.
         </p>
@@ -458,7 +456,7 @@ st.markdown(
         <b>How it works</b>
         <ul>
             <li>Select <b>Apple</b>, <b>Spotify</b>, <b>Netflix</b> or <b>Disney+</b> in the tabs below.</li>
-            <li>Within Apple you can choose between <b>Apple Music</b> and <b>iCloud+</b>.</li>
+            <li>Within Apple you can choose between <b>Apple Music</b>, <b>Apple One</b> and <b>iCloud+</b>.</li>
             <li>Use <b>Full</b> mode for a complete global run, or <b>Test</b> for a quick sample.</li>
             <li>Click <b>Run scraper</b> to launch the underlying Python code for that DSP.</li>
             <li>Track progress with a live percentage, elapsed time and estimated remaining time.</li>
@@ -475,9 +473,9 @@ st.markdown('<div class="section-heading">Choose your DSP</div>', unsafe_allow_h
 
 main_tabs = st.tabs(["Apple", "Spotify", "Netflix", "Disney+"])
 
-# Apple tab: Apple Music + iCloud+
+# Apple tab: Apple Music + Apple One + iCloud+
 with main_tabs[0]:
-    apple_tabs = st.tabs(["Apple Music", "iCloud+"])
+    apple_tabs = st.tabs(["Apple Music", "Apple One", "iCloud+"])
 
     with apple_tabs[0]:
         dsp_panel(
@@ -487,6 +485,13 @@ with main_tabs[0]:
         )
 
     with apple_tabs[1]:
+        dsp_panel(
+            dsp_name="Apple One",
+            logo_filename="apple_music_logo.png",
+            description="Scrape Apple One bundle pricing with currency, plan and country codes.",
+        )
+
+    with apple_tabs[2]:
         dsp_panel(
             dsp_name="iCloud+",
             logo_filename="icloud_logo.png",

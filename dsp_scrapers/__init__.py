@@ -8,6 +8,7 @@ correct scraper function and passes through the test-mode arguments.
 """
 
 from .apple_music_scraper import run_apple_music_scraper
+from .apple_one_scraper import run_apple_one_scraper
 from .disney_plus_scraper import run_disney_scraper
 from .spotify_scraper import run_spotify_scraper
 from .icloud_plus_scraper import run_icloud_plus_scraper
@@ -17,6 +18,7 @@ from .netflix_scraper import run_netflix_scraper
 # The keys here must match the labels used in the Streamlit UI
 DSP_OPTIONS = {
     "Apple Music": "apple_music",
+    "Apple One": "apple_one",
     "iCloud+": "icloud_plus",
     "Spotify": "spotify",
     "Netflix": "netflix",
@@ -45,6 +47,13 @@ def run_scraper(dsp_name: str, test_mode: bool, test_countries=None) -> str:
     # Apple Music: fully honours test_countries
     if kind == "apple_music":
         return run_apple_music_scraper(
+            test_mode=test_mode,
+            test_countries=test_countries,
+        )
+
+    # Apple One: honours test_countries in test mode
+    if kind == "apple_one":
+        return run_apple_one_scraper(
             test_mode=test_mode,
             test_countries=test_countries,
         )
