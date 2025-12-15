@@ -378,7 +378,7 @@ def render_table(excel_path: str, dsp_name: str):
     )
 
 
-def dsp_panel(dsp_name: str, logo_filename: str, description: str):
+def dsp_panel(dsp_name: str, logo_filename: str | None, description: str):
     # --- session state for per-DSP results: separate for full & test ---
     if "dsp_results" not in st.session_state:
         st.session_state["dsp_results"] = {"full": {}, "test": {}}
@@ -390,7 +390,7 @@ def dsp_panel(dsp_name: str, logo_filename: str, description: str):
     col_logo, col_text = st.columns([1, 5])
 
     with col_logo:
-        if os.path.exists(logo_filename):
+        if logo_filename and os.path.exists(logo_filename):
             st.image(logo_filename, width=56)
         else:
             st.markdown(
@@ -528,7 +528,7 @@ with main_tabs[0]:
     with apple_tabs[1]:
         dsp_panel(
             dsp_name="Apple One",
-            logo_filename="apple_one_logo.png",
+            logo_filename=None,
             description="Scrape Apple One bundle pricing with currency, plan and country codes.",
         )
 
