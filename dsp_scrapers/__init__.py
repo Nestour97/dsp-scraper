@@ -7,6 +7,8 @@ The Streamlit app calls :func:`run_scraper` with a friendly DSP name
 correct scraper function and passes through the test-mode arguments.
 """
 
+import re
+
 from .apple_music_scraper import run_apple_music_scraper
 from .apple_one_scraper import run_apple_one_scraper
 from .disney_plus_scraper import run_disney_scraper
@@ -25,11 +27,20 @@ DSP_OPTIONS = {
     "Disney+": "disney",
 }
 
+
+def _normalize_dsp_label(label: str) -> str:
+    """Collapse odd whitespace (including NBSP) so lookups are resilient."""
+
+    cleaned = (label or "").replace("\xa0", " ").strip()
+    # split() collapses runs of whitespace into single spaces
+    return " ".join(cleaned.split())
+
+
 # Case-insensitive lookup to avoid "Unknown DSP" errors from small variations
 NORMALIZED_OPTIONS = {name.casefold(): kind for name, kind in DSP_OPTIONS.items()}
 DSP_ALIASES = {
+    # "compact" keys (lowercase, no punctuation/whitespace)
     "appleone": "apple_one",
-    "apple-one": "apple_one",
     "apple1": "apple_one",
     "icloudplus": "icloud_plus",
 }
@@ -49,8 +60,18 @@ def run_scraper(dsp_name: str, test_mode: bool, test_countries=None) -> str:
         that should be used *only* in test mode.  When None, each scraper
         falls back to its own built-in test selection.
     """
-    normalized = (dsp_name or "").strip().casefold()
-    kind = NORMALIZED_OPTIONS.get(normalized) or DSP_ALIASES.get(normalized)
+    normalized = _normalize_dsp_label(dsp_name)
+    normalized_key = normalized.casefold()
+
+    # Primary lookup on normalized label as-is, then on a compact form without
+    # whitespace or punctuation to catch variants like "Apple-One" or NBSPs.
+    compact_key = re.sub(r"[^0-9a-z]+", "", normalized_key)
+
+    kind = (
+        NORMALIZED_OPTIONS.get(normalized_key)
+        or DSP_ALIASES.get(normalized_key)
+        or DSP_ALIASES.get(compact_key)
+    )
     if not kind:
         valid = ", ".join(DSP_OPTIONS.keys())
         raise ValueError(f"Unknown DSP name: {dsp_name!r}. Valid options: {valid}")
