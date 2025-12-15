@@ -93,6 +93,22 @@ def _git_commit_label() -> str:
 
 BUILD_LABEL = _git_commit_label()
 
+
+def _git_commit_summary() -> str:
+    """Return the latest commit subject for display in the header."""
+
+    try:
+        return (
+            subprocess.check_output(
+                ["git", "log", "-1", "--pretty=%s"], text=True
+            ).strip()
+        )
+    except Exception:
+        return "latest changes"
+
+
+BUILD_SUMMARY = _git_commit_summary()
+
 # ===================== PAGE CONFIG =====================
 
 st.set_page_config(
@@ -468,7 +484,7 @@ st.markdown(
             Run scrapes on demand, explore the results in a Power BI-style grid,
             and export straight to Excel.
         </p>
-        <div class="header-build">Build: {BUILD_LABEL}</div>
+        <div class="header-build">Build: {BUILD_LABEL} — {BUILD_SUMMARY}</div>
         <div class="header-pill">DSP ANALYTICS TOOL</div>
     </div>
     """,
