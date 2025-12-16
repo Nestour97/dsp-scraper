@@ -6,12 +6,13 @@ from pathlib import Path
 import subprocess
 import sys
 from io import BytesIO
+from typing import Optional
 
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
-# Pillow is used to crop transparent padding around logos
+# Pillow is used to crop transparent padding around logos (recommended)
 try:
     from PIL import Image
 except Exception:
@@ -181,11 +182,6 @@ st.markdown(
         color: #ffffff;
     }}
 
-    .side-note {{
-        font-size: 0.86rem;
-        color: #cccccc;
-    }}
-
     /* center DSP tabs and enlarge labels */
     .stTabs [role="tablist"] {{
         justify-content: center;
@@ -240,35 +236,42 @@ st.markdown(
 
 # ===================== LOGO HELPERS =====================
 
-def _logo_bytes_cropped(path: str, canvas_px: int = 360) -> bytes | None:
+# 👇 One knob to adjust all DSP logo sizes
+LOGO_WIDTH_PX = 88        # try 80–100
+LOGO_CANVAS_PX = 240      # internal quality/consistency
+
+def _logo_bytes_cropped(path: str) -> Optional[bytes]:
     """
-    Crop transparent padding, then fit into a square canvas for consistent rendering.
-    Returns PNG bytes (or None if unavailable).
+    Crop transparent padding and center into a square canvas.
+    Returns PNG bytes.
     """
-    if not path or not os.path.exists(path):
+    if not path:
+        return None
+    p = Path(path)
+    if not p.is_file():
         return None
 
-    # If Pillow isn't available, return raw file bytes
+    # If Pillow isn't available, return raw bytes (no cropping)
     if Image is None:
         try:
-            return Path(path).read_bytes()
+            return p.read_bytes()
         except Exception:
             return None
 
     try:
-        img = Image.open(path).convert("RGBA")
+        img = Image.open(str(p)).convert("RGBA")
 
-        # Crop by alpha (removes the big invisible padding that makes logos look tiny)
+        # Crop transparent padding
         alpha = img.split()[-1]
         bbox = alpha.getbbox()
         if bbox:
             img = img.crop(bbox)
 
-        # Fit into square canvas
-        img.thumbnail((canvas_px, canvas_px), Image.LANCZOS)
-        canvas = Image.new("RGBA", (canvas_px, canvas_px), (0, 0, 0, 0))
-        x = (canvas_px - img.width) // 2
-        y = (canvas_px - img.height) // 2
+        # Fit into square canvas (keeps all logos consistent)
+        img.thumbnail((LOGO_CANVAS_PX, LOGO_CANVAS_PX), Image.LANCZOS)
+        canvas = Image.new("RGBA", (LOGO_CANVAS_PX, LOGO_CANVAS_PX), (0, 0, 0, 0))
+        x = (LOGO_CANVAS_PX - img.width) // 2
+        y = (LOGO_CANVAS_PX - img.height) // 2
         canvas.paste(img, (x, y), img)
 
         buf = BytesIO()
@@ -278,44 +281,29 @@ def _logo_bytes_cropped(path: str, canvas_px: int = 360) -> bytes | None:
         return None
 
 
-def show_logo(path: str, *, col_fill: bool = True, max_width_px: int = 140):
-    """
-    Show a logo big and consistent. We use:
-    - transparent-padding crop
-    - square canvas
-    - then fill the column width (best for eliminating empty space)
-    """
-    data = _logo_bytes_cropped(path, canvas_px=420)
+def show_logo(path: str):
+    data = _logo_bytes_cropped(path)
     if not data:
         return
-
-    if col_fill:
-        st.image(data, use_container_width=True)
-    else:
-        st.image(data, width=max_width_px)
+    st.image(data, width=LOGO_WIDTH_PX)
 
 
 def centered_sony_logo():
     logo_path = "sony_logo.png"
-    if not os.path.exists(logo_path):
-        return
-
-    data = _logo_bytes_cropped(logo_path, canvas_px=260)
+    data = _logo_bytes_cropped(logo_path)
     if not data:
         return
-
     b64 = base64.b64encode(data).decode("utf-8")
     st.markdown(
         f"""
         <p style="text-align:center; margin-bottom:0.3rem;">
-            <img src="data:image/png;base64,{b64}" width="135">
+            <img src="data:image/png;base64,{b64}" width="120">
         </p>
         """,
         unsafe_allow_html=True,
     )
 
-
-# ===================== RUN / RENDER HELPERS =====================
+# ===================== HELPERS =====================
 
 def run_with_progress(dsp_name: str, test_mode: bool, test_countries=None):
     status_placeholder = st.empty()
@@ -407,7 +395,7 @@ def render_table(excel_path: str, dsp_name: str):
     )
 
 
-def dsp_panel(dsp_name: str, logo_filename: str | None, description: str):
+def dsp_panel(dsp_name: str, logo_filename: Optional[str], description: str):
     # --- session state for per-DSP results: separate for full & test ---
     if "dsp_results" not in st.session_state:
         st.session_state["dsp_results"] = {"full": {}, "test": {}}
@@ -416,12 +404,12 @@ def dsp_panel(dsp_name: str, logo_filename: str | None, description: str):
     test_results = st.session_state["dsp_results"]["test"]
 
     # --- header row: logo + text ---
-    # Make the logo column a bit wider and let the logo fill it.
-    col_logo, col_text = st.columns([1.25, 6.75])
+    # Narrow logo column so there isn't a big empty left area.
+    col_logo, col_text = st.columns([0.85, 7.15], vertical_alignment="center")
 
     with col_logo:
         if logo_filename:
-            show_logo(logo_filename, col_fill=True)
+            show_logo(logo_filename)
 
     with col_text:
         st.markdown(
@@ -500,7 +488,7 @@ st.markdown(
         <div class="header-title">DSP PRICE SCRAPER</div>
         <p class="header-subtitle">
             Central hub for Apple Music, Apple One, iCloud+, Spotify, Netflix &amp; Disney+ pricing.
-            Run scrapes on demand, explore the results,
+            Run scrapes on demand, explore the results in a Power BI-style grid,
             and export straight to Excel.
         </p>
         <div class="header-pill">DSP ANALYTICS TOOL</div>
@@ -532,6 +520,7 @@ st.markdown('<div class="section-heading">Choose your DSP</div>', unsafe_allow_h
 
 main_tabs = st.tabs(["Apple", "Spotify", "Netflix", "Disney+"])
 
+# Apple tab: Apple Music + Apple One + iCloud+
 with main_tabs[0]:
     apple_tabs = st.tabs(["Apple Music", "Apple One", "iCloud+"])
 
@@ -545,7 +534,7 @@ with main_tabs[0]:
     with apple_tabs[1]:
         dsp_panel(
             dsp_name="Apple One",
-            logo_filename="apple_one_logo.png",  # <-- put your Apple One logo filename here
+            logo_filename="apple_one_logo_on_black.png",  # <- change if your filename differs
             description="Scrape Apple One bundle pricing with currency, plan and country codes.",
         )
 
@@ -556,6 +545,7 @@ with main_tabs[0]:
             description="Scrape iCloud+ storage plan prices by country, including plan size and currency.",
         )
 
+# Spotify tab
 with main_tabs[1]:
     dsp_panel(
         dsp_name="Spotify",
@@ -563,6 +553,7 @@ with main_tabs[1]:
         description="Scrape Spotify Premium plan prices by country using the Playwright-based scraper.",
     )
 
+# Netflix tab
 with main_tabs[2]:
     dsp_panel(
         dsp_name="Netflix",
@@ -570,11 +561,10 @@ with main_tabs[2]:
         description="Scrape Netflix plan pricing for each available country from the Help Center article.",
     )
 
+# Disney+ tab
 with main_tabs[3]:
     dsp_panel(
         dsp_name="Disney+",
         logo_filename="disney_plus_logo.png",
         description="Scrape Disney+ subscription pricing using the Playwright-powered scraper.",
     )
-
-
