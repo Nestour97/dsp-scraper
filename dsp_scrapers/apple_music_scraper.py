@@ -3,7 +3,13 @@
 # Apple Music scraper with:
 # - Strong redirect detection
 # - Robust currency parsing (Spotify-style)
-# - Better recurring-price selection (avoids intro/trial prices)
+# - Multi-language recurring-price selection (avoids intro/trial prices)
+# - Fixes:
+#   * CN: supports RMB pricing on apple.com.cn
+#   * CO: avoids footnote "8 $" / "9 $" mis-parses + stitches split prices
+#   * Many locales: avoids promo/intro "3 months for ..." picking instead of monthly
+#   * If Individual looks suspicious, overrides with music.apple.com recurring price
+# - More robust DOM extraction with semantic fallback (helps JP and markup changes)
 # ------------------------------------------------------------
 
 import re, time, threading, sqlite3, asyncio
@@ -78,25 +84,12 @@ MISSING_DB = "apple_music_missing.sqlite"
 MISSING_CSV = "apple_music_missing.csv"
 MISSING_BUFFER = []
 
-PRICE_HINT_SELECTORS = [
-    ("p", "plan-type cost"),
-    ("span", "price"),
-    ("span", "current-price"),
-    ("span", "ac-price"),
-    ("div", "price"),
-    ("li", "price"),
-    ("span", "price-point"),
-    ("span", "pricing__amount"),
-    ("div", "pricing"),
-]
+# includes fullwidth yen ￥, adds RMB/CN¥ support
+CURRENCY_CHARS = r"[$€£¥￥₩₫₱₹₪₭₮₦₲₴₡₵₺₼₸៛₨₥₾฿]"
 
-# includes Kazakhstani tenge symbol ₸
-CURRENCY_CHARS = r"[$€£¥₩₫₱₹₪₭₮₦₲₴₡₵₺₼₸៛₨₥₾฿]"
-
-# allow for Tenge (₸) and others; used in banner/DOM price tokenization
 CURRENCY_TOKEN = (
-    r"(US\$|CA\$|AU\$|HK\$|NT\$|MOP\$|NZ\$|RM|S/\.|R\$|CHF|Rp|kr|"
-    r"\$|€|£|¥|₩|₫|₱|₹|₪|₭|₮|₦|₲|₴|₸|TSh|KSh|USh|ZAR|ZWL|R|"
+    r"(RMB|CN¥|US\$|CA\$|AU\$|HK\$|NT\$|MOP\$|NZ\$|RM|S/\.|R\$|CHF|Rp|kr|"
+    r"\$|€|£|¥|￥|₩|₫|₱|₹|₪|₭|₮|₦|₲|₴|₸|TSh|KSh|USh|ZAR|ZWL|R|"
     r"SAR|QAR|AED|KWD|BHD|OMR)"
 )
 
@@ -105,7 +98,7 @@ NUMBER_TOKEN = r"(\d+(?:[.,\s]\d{3})*(?:[.,]\d{1,2})?)"
 
 # allow arbitrary whitespace between currency and number and vice versa
 BANNER_PRICE_REGEX = re.compile(
-    rf"(?:{CURRENCY_TOKEN}\s*{NUMBER_TOKEN}|{NUMBER_TOKEN}\s*{CURRENCY_TOKEN})"
+    rf"(?:{CURRENCY_TOKEN}\s*{NUMBER_TOKEN}|{NUMBER_TOKEN}\s*{CURRENCY_TOKEN})\*?"
 )
 
 # stricter numeric pattern, also allowing spaces as thousands separators
@@ -191,6 +184,8 @@ HARDCODE_FALLBACKS = {
 KNOWN_ISO = set(HARDCODE_FALLBACKS.values())
 
 STRONG_TOKENS = [
+    (r"(?i)\bRMB\b", "CNY"),
+    (r"CN¥", "CNY"),
     (r"(?i)US\$", "USD"), (r"(?i)\$US", "USD"), (r"(?i)U\$S", "USD"),
     (r"(?i)\bA\$", "AUD"), (r"(?i)\bNZ\$", "NZD"), (r"(?i)\bHK\$", "HKD"),
     (r"(?i)\bNT\$", "TWD"), (r"(?i)\bS\$", "SGD"), (r"(?i)\bRD\$", "DOP"),
@@ -216,6 +211,7 @@ SINGLE_SYMBOL_TO_ISO = {
     "₵": "GHS",
     "₱": "PHP",
     "₸": "KZT",
+    "￥": "JPY",  # refined by CC logic in detect_currency_* (CN -> CNY, JP -> JPY)
 }
 
 AMBIG_TOKENS = {
@@ -251,11 +247,15 @@ def detect_currency_in_text(text: str, alpha2: str):
         if re.search(pat, s):
             return iso, "symbol"
 
-    if "¥" in s and not re.search(r"[A-Z]{3}", s, re.I):
+    if ("¥" in s or "￥" in s) and not re.search(r"[A-Z]{3}", s, re.I):
         cc = (alpha2 or "").upper()
         return ("CNY" if cc == "CN" else "JPY" if cc == "JP" else default_currency_for_alpha2(cc), "symbol")
+
     for sym, iso in SINGLE_SYMBOL_TO_ISO.items():
         if sym in s:
+            if sym in {"¥", "￥"}:
+                cc = (alpha2 or "").upper()
+                return ("CNY" if cc == "CN" else "JPY" if cc == "JP" else default_currency_for_alpha2(cc), "symbol")
             return iso, "symbol"
 
     S = s.upper()
@@ -285,15 +285,23 @@ def detect_currency_from_display(display_text: str, alpha2: str):
         if m:
             return iso, "symbol", m.group(0)
 
-    if "¥" in s and not re.search(r"[A-Z]{3}", s, re.I):
+    if ("¥" in s or "￥" in s) and not re.search(r"[A-Z]{3}", s, re.I):
         cc = (alpha2 or "").upper()
         return (
             "CNY" if cc == "CN" else "JPY" if cc == "JP" else default_currency_for_alpha2(cc),
             "symbol",
-            "¥",
+            "¥" if "¥" in s else "￥",
         )
+
     for sym, iso in SINGLE_SYMBOL_TO_ISO.items():
         if sym in s:
+            if sym in {"¥", "￥"}:
+                cc = (alpha2 or "").upper()
+                return (
+                    "CNY" if cc == "CN" else "JPY" if cc == "JP" else default_currency_for_alpha2(cc),
+                    "symbol",
+                    sym,
+                )
             return iso, "symbol", sym
 
     S = s.upper()
@@ -372,7 +380,7 @@ def extract_amount_number(text: str) -> str:
         return _normalize_number(m.group(1))
 
     m = re.search(
-        r"(?:US\$|[€£¥₩₫₺₪₴₼₾₭฿₦₵₱₸]|NT\$|HK\$|S/\.|S/|R\$|RD\$|N\$|KSh|TSh|USh|Rp)\s*" + num_pat,
+        r"(?:RMB|CN¥|US\$|[€£¥￥₩₫₺₪₴₼₾₭฿₦₵₱₸]|NT\$|HK\$|S/\.|S/|R\$|RD\$|N\$|KSh|TSh|USh|Rp)\s*" + num_pat,
         t,
         re.I,
     )
@@ -387,6 +395,31 @@ def extract_amount_number(text: str) -> str:
     return ""
 
 # ================= Helpers =================
+
+def normalize_for_price_extraction(s: str) -> str:
+    """
+    Makes flattened DOM text more regex-friendly:
+    - collapses whitespace
+    - stitches "8 . 500" -> "8.500"
+    - stitches "$ 8.500" -> "$8.500"
+    - stitches "8 $ 500" -> "$8 500" (so NUMBER_TOKEN can capture 8 500)
+    """
+    s = _clean(s or "")
+    if not s:
+        return ""
+
+    s = re.sub(r"\s+", " ", s)
+
+    # stitch numeric punctuation if it got spaced out by DOM flattening: "8 . 500" => "8.500"
+    s = re.sub(r"(\d)\s*([.,])\s*(\d)", r"\1\2\3", s)
+
+    # stitch currency separated from number: "$ 8" => "$8"
+    s = re.sub(rf"({CURRENCY_TOKEN})\s+(\d)", r"\1\2", s, flags=re.I)
+
+    # stitch cases where currency lands between thousand groups: "8 $ 500" => "$8 500"
+    s = re.sub(rf"(\d{{1,3}})\s*({CURRENCY_TOKEN})\s*(\d{{3}})\b", r"\2\1 \3", s, flags=re.I)
+
+    return s
 
 @lru_cache(maxsize=None)
 def normalize_country_name(name):
@@ -460,43 +493,53 @@ def log_missing(country, code, url, reason):
 
 # ================= DOM parsing =================
 
-def _price_tokens_from_text(text: str):
-    if not text:
-        return []
-    text = _clean(text)
+# --- prefer recurring monthly price over intro/trial price (multi-language) ---
+MONTHLY_POS_RE = re.compile(
+    r"(?i)("
+    r"/\s*month\b|per\s+month\b|monthly\b|/\s*mo\b|/\s*mth\b|"
+    r"\bal\s+mes\b|\bpor\s+mes\b|/mes\b|\bmensual(?:es)?\b|"
+    r"\bpar\s+mois\b|/mois\b|\bmensuel(?:le|s)?\b|"
+    r"\bpro\s+monat\b|/monat\b|\bmonatlich\b|"
+    r"\bal\s+mese\b|/mese\b|\bmensile\b|"
+    r"\bper\s+maand\b|/maand\b|\bmaandelijks\b|"
+    r"/月|毎月|每月|月額|/월|매월|"
+    r"/(?:bulan|ay|เดือน)\b|per\s+bulan\b|ayl[ıi]k\b|ต่อเดือน\b"
+    r")"
+)
 
-    tokens = [m.group(0) for m in BANNER_PRICE_REGEX.finditer(text)]
-    tokens += [
-        m.group(0)
-        for m in re.finditer(r"\b[A-Z]{3}\b\s*" + NUMBER_TOKEN, text)
-    ]
-    tokens += [
-        m.group(0)
-        for m in re.finditer(NUMBER_TOKEN + r"\s*\b[A-Z]{3}\b", text)
-    ]
-    seen, out = set(), []
-    for t in tokens:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
+THEN_POS_RE = re.compile(
+    r"(?i)\b("
+    r"then|thereafter|after|"
+    r"luego|despu[eé]s|a\s+partir\s+de|"
+    r"ensuite|puis|apr[eè]s|"
+    r"danach|"
+    r"之后|以後|その後|以降|"
+    r"이후|다음"
+    r")\b"
+)
 
-# --- NEW: prefer recurring monthly price over intro/trial price ---
-MONTHLY_POS_RE = re.compile(r"(?i)(/\s*month\b|per\s+month\b|monthly\b|/\s*mo\b|/\s*mth\b)")
-THEN_POS_RE = re.compile(r"(?i)\b(then|thereafter|after)\b")
 INTRO_NEG_RE = re.compile(
-    r"(?i)\b(try|trial|free|offer|limited|intro|new\s+subscribers?)\b|\bfor\s+\d+\s+months?\b"
+    r"(?i)\b("
+    r"try|trial|free|offer|limited|intro|new\s+subscribers?|"
+    r"\bfor\s+\d+\s+months?\b|"
+    r"\b\d+\s+mes(?:es)?\b|\bpor\s+\d+\s+mes(?:es)?\b|"
+    r"\b\d+\s+mois\b|"
+    r"\b\d+\s+monate?\b|"
+    r"\b\d+\s+(?:ヶ月|か月)\b|"
+    r"\b\d+\s+개월\b"
+    r")\b"
 )
 
 def pick_best_price_token(text: str):
     """
     Select the most likely recurring monthly price token.
     Example: '₹9 for 3 months ... then ₹119/month' -> picks ₹119
+    Returns: (token, numeric_value) or None
     """
     if not text:
         return None
 
-    s = _clean(text)
+    s = normalize_for_price_extraction(text)
     matches = list(BANNER_PRICE_REGEX.finditer(s))
     if not matches:
         return None
@@ -516,19 +559,23 @@ def pick_best_price_token(text: str):
             continue
 
         start, end = m.start(), m.end()
-        window = s[max(0, start - 60):min(len(s), end + 80)]
+        window = s[max(0, start - 70):min(len(s), end + 120)]
 
         score = 0
         if MONTHLY_POS_RE.search(window):
-            score += 12
+            score += 15
         if THEN_POS_RE.search(window):
-            score += 8
+            score += 10
         if INTRO_NEG_RE.search(window):
-            score -= 7
+            score -= 10
         if then_pos is not None and start > then_pos:
-            score += 6
+            score += 8
 
-        cands.append((score, val, tok, start))
+        # de-prioritize obvious footnote artifacts like "8$" / "9$"
+        if val < 10 and not re.search(r"[.,]\d{1,2}\b", tok):
+            score -= 8
+
+        cands.append((score, val, tok, start, window))
 
     if not cands:
         return None
@@ -540,8 +587,13 @@ def pick_best_price_token(text: str):
             return best[2], best[1]
 
     best = max(cands, key=lambda x: (x[0], x[1]))
+
+    # Promo-only guard: if best is strongly “intro” and not “monthly”, force fallback
+    if best[0] <= 0 and INTRO_NEG_RE.search(best[4]) and not MONTHLY_POS_RE.search(s):
+        return None
+
     return best[2], best[1]
-# --- end NEW ---
+# --- end recurring price logic ---
 
 def candidate_price_nodes(card: Tag):
     nodes = list(card.select(
@@ -550,7 +602,7 @@ def candidate_price_nodes(card: Tag):
     ))
     for el in card.find_all(True):
         txt = (el.get("aria-label") or el.get_text(" ", strip=True) or "")
-        if txt and re.search(rf"{CURRENCY_CHARS}|Rp|SAR|QAR|AED|KWD|BHD|OMR|RM|HK\$|NT\$|US\$", txt):
+        if txt and re.search(rf"{CURRENCY_CHARS}|RMB|CN¥|Rp|SAR|QAR|AED|KWD|BHD|OMR|RM|HK\$|NT\$|US\$", txt):
             nodes.append(el)
     seen, out = set(), []
     for n in nodes:
@@ -558,13 +610,84 @@ def candidate_price_nodes(card: Tag):
             seen.add(id(n)); out.append(n)
     return out
 
+# Semantic plan keyword matching (helps JP + markup changes)
+PLAN_RE = {
+    "Student": re.compile(r"(?i)\b(student|estudiante|étudiant|etudiant|schüler|schueler|студент|학생|sinh\s+viên)\b|学生|學生"),
+    "Individual": re.compile(r"(?i)\b(individual|personal|individuale|individuel|individuell|individuo)\b|個人|个人|개인"),
+    "Family": re.compile(r"(?i)\b(family|familia|famille|familie|famiglia|fam[íi]lia)\b|家族|가족"),
+}
+
+def extract_plan_entries_semantic(section: Tag, alpha2: str):
+    """
+    Fallback when Apple changes card structure:
+    - locate plan-name nodes (multi-language)
+    - climb ancestor containers to find the nearest recurring price token
+    """
+    entries = {}
+    if not section:
+        return entries
+
+    candidates = []
+    for el in section.find_all(["h1","h2","h3","h4","p","span","div","li"]):
+        txt = _clean(el.get_text(" ", strip=True))
+        if not txt or len(txt) > 140:
+            continue
+        for plan, rx in PLAN_RE.items():
+            if rx.search(txt):
+                candidates.append((plan, el))
+                break
+
+    def ancestor_blocks(el: Tag, max_up=6):
+        cur = el
+        for _ in range(max_up):
+            if not cur or not isinstance(cur, Tag):
+                break
+            yield cur
+            cur = cur.parent if hasattr(cur, "parent") else None
+
+    for plan, el in candidates:
+        best = None
+        for block in ancestor_blocks(el, max_up=7):
+            block_text = " ".join(block.stripped_strings)
+            token_val = pick_best_price_token(block_text)
+            if token_val:
+                # prefer smaller blocks (closer ancestor) by breaking early
+                best = (block_text, token_val)
+                break
+        if not best:
+            continue
+
+        _, (tok, val) = best
+        iso, src, raw_cur = detect_currency_from_display(tok, alpha2)
+        if src in {"ambiguous_symbol->default", "territory_default"}:
+            iso2, src2 = detect_currency_in_text(best[0], alpha2)
+            if src2 in {"symbol", "code"} and iso2:
+                iso, src = iso2, f"context-{src2}"
+            iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, val, alpha2, best[0])
+            if why:
+                iso, src = iso_res, f"heuristic-{why}"
+
+        if plan not in entries:
+            entries[plan] = {
+                "Currency": iso,
+                "Currency Source": src,
+                "Currency Raw": raw_cur,
+                "Price Display": _clean(tok),
+                "Price Value": val,
+            }
+
+    return entries
+
 def extract_plan_entries_from_dom_apple(soup: BeautifulSoup, alpha2: str):
     section = (soup.find("section", attrs={"data-analytics-name": re.compile("plans", re.I)})
-               or soup.find("section", class_=re.compile("section-plans", re.I))
+               or soup.find("section", class_=re.compile("section-plans|plans", re.I))
                or soup)
-    cards = section.select("div.plan-list-item, li.gallery-item, li[role='listitem']")
-    if not cards:
-        return {}
+
+    # Try known Apple-ish card containers
+    cards = section.select(
+        "div.plan-list-item, li.gallery-item, li[role='listitem'], "
+        "div[class*='plan'], div[class*='pricing'], article"
+    )
 
     def classify(card: Tag) -> str:
         cid = (card.get("id") or "").lower()
@@ -577,59 +700,72 @@ def extract_plan_entries_from_dom_apple(soup: BeautifulSoup, alpha2: str):
             return "Individual"
         if "family" in low:
             return "Family"
-        head = card.select_one("h2, h3, h4, p")
+        head = card.select_one("h1, h2, h3, h4, p, span")
         if head:
-            return standardize_plan(head.get_text(" ", strip=True), 0)
+            # try plan regex first
+            ht = head.get_text(" ", strip=True)
+            for p, rx in PLAN_RE.items():
+                if rx.search(ht):
+                    return p
+            return standardize_plan(ht, 0)
         return "Individual"
 
     entries = {}
-    for card in cards:
-        std = classify(card)
-        full_text = " ".join(card.stripped_strings)
+    if cards:
+        for card in cards:
+            std = classify(card)
+            full_text = " ".join(card.stripped_strings)
 
-        # Prefer recurring price from the full card text first
-        token_val = pick_best_price_token(full_text)
+            # Prefer recurring price from the full card text first
+            token_val = pick_best_price_token(full_text)
 
-        # If that fails, try richer aria/text nodes
-        if not token_val:
-            for el in candidate_price_nodes(card):
-                raw = (el.get("aria-label") or el.get_text(" ", strip=True) or "")
-                token_val = pick_best_price_token(raw)
-                if token_val:
-                    break
+            # If that fails, try richer aria/text nodes
+            if not token_val:
+                for el in candidate_price_nodes(card):
+                    raw = (el.get("aria-label") or el.get_text(" ", strip=True) or "")
+                    token_val = pick_best_price_token(raw)
+                    if token_val:
+                        break
 
-        if not token_val:
-            continue
+            if not token_val:
+                continue
 
-        chosen_tok, chosen_val = token_val
+            chosen_tok, chosen_val = token_val
 
-        iso, src, raw_cur = detect_currency_from_display(chosen_tok, alpha2)
-        if src in {"ambiguous_symbol->default", "territory_default"}:
-            iso2, src2 = detect_currency_in_text(full_text, alpha2)
-            if src2 in {"symbol", "code"} and iso2:
-                iso, src = iso2, f"context-{src2}"
-            iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, chosen_val, alpha2, full_text)
-            if why:
-                iso, src = iso_res, f"heuristic-{why}"
+            iso, src, raw_cur = detect_currency_from_display(chosen_tok, alpha2)
+            if src in {"ambiguous_symbol->default", "territory_default"}:
+                iso2, src2 = detect_currency_in_text(full_text, alpha2)
+                if src2 in {"symbol", "code"} and iso2:
+                    iso, src = iso2, f"context-{src2}"
+                iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, chosen_val, alpha2, full_text)
+                if why:
+                    iso, src = iso_res, f"heuristic-{why}"
 
-        if std not in entries:
-            entries[std] = {
-                "Currency": iso,
-                "Currency Source": src,
-                "Currency Raw": raw_cur,
-                "Price Display": _clean(chosen_tok),
-                "Price Value": chosen_val,
-            }
+            if std not in entries:
+                entries[std] = {
+                    "Currency": iso,
+                    "Currency Source": src,
+                    "Currency Raw": raw_cur,
+                    "Price Display": _clean(chosen_tok),
+                    "Price Value": chosen_val,
+                }
+
+    # Semantic fallback (helps JP + structure changes)
+    if len(entries) < 2:
+        sem = extract_plan_entries_semantic(section, alpha2)
+        for k, v in sem.items():
+            entries.setdefault(k, v)
+
     return entries
 
 def extract_plan_entries_from_dom_generic(soup: BeautifulSoup, alpha2: str):
     entries = {}
     plan_lists = soup.find_all(attrs={"class": re.compile(r"(plan|tier|pricing)", re.I)}) or [soup]
     for container in plan_lists:
-        cards = container.find_all(True, class_=re.compile(r"(plan|tier|card)", re.I)) or [container]
+        cards = container.find_all(True, class_=re.compile(r"(plan|tier|card|pricing)", re.I)) or [container]
         for idx, card in enumerate(cards):
             lab = (card.find("p", class_=re.compile("plan-type|name", re.I))
-                   or card.find(re.compile("h[2-4]")) or card)
+                   or card.find(re.compile("h[1-6]")) or card)
             plan_name = _clean(lab.get_text()) if lab else f"Plan {idx+1}"
             std = standardize_plan(plan_name, idx)
             raw_text = " ".join(card.stripped_strings)
@@ -736,6 +872,47 @@ def _extract_price_from_banner_text(text: str):
         return "", "", None
     tok, val = tok_val
     return "", _clean(tok), val
+
+def fetch_banner_individual_price(alpha2: str):
+    """
+    Returns recurring Individual price from music.apple.com banner, or None.
+    Used to override suspicious 'Individual' prices scraped from Apple marketing pages.
+    """
+    with BANNER_SEMAPHORE:
+        try:
+            text, final_url = asyncio.run(_get_music_banner_text_async(alpha2))
+        except RuntimeError:
+            holder = {}
+            def runner():
+                holder["pair"] = asyncio.run(_get_music_banner_text_async(alpha2))
+            t = threading.Thread(target=runner, daemon=True)
+            t.start(); t.join()
+            text, final_url = holder.get("pair", ("", ""))
+
+    store_cc = _extract_cc(final_url)
+    if not store_cc or store_cc != alpha2.upper():
+        return None
+
+    _, disp, val = _extract_price_from_banner_text(text)
+    if val is None:
+        return None
+
+    iso, src, raw_cur = detect_currency_from_display(disp, alpha2)
+    if src in {"ambiguous_symbol->default", "territory_default"}:
+        iso2, src2 = detect_currency_in_text(text, alpha2)
+        if iso2 and src2 in {"symbol", "code"}:
+            iso, src = iso2, f"context-{src2}"
+        iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, val, alpha2, text)
+        if why:
+            iso, src = iso_res, f"heuristic-{why}"
+
+    return {
+        "Currency": iso,
+        "Currency Source": src,
+        "Currency Raw": raw_cur or "",
+        "Price Display": _clean(disp),
+        "Price Value": val,
+    }
 
 def banner_individual_row(alpha2: str, country_name: str, meta=None):
     with BANNER_SEMAPHORE:
@@ -866,7 +1043,7 @@ def scrape_country(alpha2: str):
                     },
                 )
 
-            # (B) redirected to different storefront (FIXED: actually triggers now)
+            # (B) redirected to different storefront
             final_cc = _extract_cc(resp.url)
             if final_cc and not _storefront_equivalent(cc, final_cc):
                 cn = normalize_country_name(get_country_name_from_code(cc))
@@ -907,6 +1084,22 @@ def scrape_country(alpha2: str):
             code = (get_country_code(country_name) or cc).upper()
 
             entries = extract_plan_entries_from_dom(soup, code)
+
+            # If Individual looks like promo/footnote garbage, override with music banner recurring price
+            if entries and "Individual" in entries:
+                ind_val = entries["Individual"].get("Price Value")
+                stud_val = entries.get("Student", {}).get("Price Value")
+
+                suspicious = False
+                if stud_val is not None and ind_val is not None and ind_val < stud_val:
+                    suspicious = True
+                if ind_val is not None and ind_val < 10:
+                    suspicious = True
+
+                if suspicious:
+                    banner = fetch_banner_individual_price(code)
+                    if banner:
+                        entries["Individual"].update(banner)
 
             # (D) No plan entries: check for US content signature and flag (skip for US)
             if cc != "US" and not entries and looks_like_us_content(soup):
@@ -994,7 +1187,6 @@ def run_scraper(country_codes_override=None):
         all_codes = sorted(requested)
         print(f"🎯 Subset mode: scraping {len(all_codes)} countries: {all_codes}")
     elif TEST_MODE:
-        # FIX: strip and keep only valid 2-letter codes
         all_codes = sorted({c.strip().upper() for c in TEST_COUNTRIES if c and len(c.strip()) == 2})
         print(f"🧪 TEST MODE: scraping {len(all_codes)} countries: {all_codes}")
     else:
