@@ -5,10 +5,17 @@ import base64
 from pathlib import Path
 import subprocess
 import sys
+from io import BytesIO
 
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+
+# Pillow is used to crop transparent padding around logos
+try:
+    from PIL import Image
+except Exception:
+    Image = None
 
 # --- Ensure Playwright browsers are installed (Spotify / Netflix / Disney+ / Apple Music) ---
 def ensure_playwright_chromium():
@@ -26,7 +33,6 @@ def ensure_playwright_chromium():
                     has_chromium = True
                     break
     except Exception:
-        # If the check fails for any reason, fall back to trying install.
         pass
 
     if not has_chromium:
@@ -38,16 +44,14 @@ def ensure_playwright_chromium():
             )
             print("[bootstrap] Playwright Chromium install finished.", flush=True)
         except Exception as e:
-            # Don't kill the app; the scrapers will still show a clear error if this fails.
             print(f"[bootstrap] WARNING: Playwright browser install failed: {e}", flush=True)
 
 
 # Run once when the app script starts
 ensure_playwright_chromium()
 
-from dsp_scrapers import run_scraper
-
-import pycountry
+from dsp_scrapers import run_scraper  # noqa: E402
+import pycountry  # noqa: E402
 
 # -------------------------------------------------------------------
 # Canonical full-result filenames (must match what your scrapers save)
@@ -69,7 +73,7 @@ COUNTRY_OPTIONS = sorted(
 
 
 def _extract_alpha2(selection):
-    """Turn ['France (FR)', 'Japan (JP)'] into ['FR', 'JP']."""
+    """Turn ['France (FR)', 'Japan (JP)'] into ['FR', 'JP']."""  # noqa: D401
     codes = []
     for item in selection:
         if "(" in item and ")" in item:
@@ -234,23 +238,84 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ===================== HELPERS =====================
+# ===================== LOGO HELPERS =====================
+
+def _logo_bytes_cropped(path: str, canvas_px: int = 360) -> bytes | None:
+    """
+    Crop transparent padding, then fit into a square canvas for consistent rendering.
+    Returns PNG bytes (or None if unavailable).
+    """
+    if not path or not os.path.exists(path):
+        return None
+
+    # If Pillow isn't available, return raw file bytes
+    if Image is None:
+        try:
+            return Path(path).read_bytes()
+        except Exception:
+            return None
+
+    try:
+        img = Image.open(path).convert("RGBA")
+
+        # Crop by alpha (removes the big invisible padding that makes logos look tiny)
+        alpha = img.split()[-1]
+        bbox = alpha.getbbox()
+        if bbox:
+            img = img.crop(bbox)
+
+        # Fit into square canvas
+        img.thumbnail((canvas_px, canvas_px), Image.LANCZOS)
+        canvas = Image.new("RGBA", (canvas_px, canvas_px), (0, 0, 0, 0))
+        x = (canvas_px - img.width) // 2
+        y = (canvas_px - img.height) // 2
+        canvas.paste(img, (x, y), img)
+
+        buf = BytesIO()
+        canvas.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def show_logo(path: str, *, col_fill: bool = True, max_width_px: int = 140):
+    """
+    Show a logo big and consistent. We use:
+    - transparent-padding crop
+    - square canvas
+    - then fill the column width (best for eliminating empty space)
+    """
+    data = _logo_bytes_cropped(path, canvas_px=420)
+    if not data:
+        return
+
+    if col_fill:
+        st.image(data, use_container_width=True)
+    else:
+        st.image(data, width=max_width_px)
 
 
 def centered_sony_logo():
-    logo_path = Path("sony_logo.png")
-    if not logo_path.is_file():
+    logo_path = "sony_logo.png"
+    if not os.path.exists(logo_path):
         return
-    data = base64.b64encode(logo_path.read_bytes()).decode("utf-8")
+
+    data = _logo_bytes_cropped(logo_path, canvas_px=260)
+    if not data:
+        return
+
+    b64 = base64.b64encode(data).decode("utf-8")
     st.markdown(
-        f'''
+        f"""
         <p style="text-align:center; margin-bottom:0.3rem;">
-            <img src="data:image/png;base64,{data}" width="120">
+            <img src="data:image/png;base64,{b64}" width="135">
         </p>
-        ''',
+        """,
         unsafe_allow_html=True,
     )
 
+
+# ===================== RUN / RENDER HELPERS =====================
 
 def run_with_progress(dsp_name: str, test_mode: bool, test_countries=None):
     status_placeholder = st.empty()
@@ -272,7 +337,6 @@ def run_with_progress(dsp_name: str, test_mode: bool, test_countries=None):
     thread.start()
 
     start = time.time()
-    # crude guess: tests are quick, full runs slower
     expected = 90 if test_mode else 600
 
     while thread.is_alive():
@@ -343,7 +407,7 @@ def render_table(excel_path: str, dsp_name: str):
     )
 
 
-def dsp_panel(dsp_name: str, logo_filename: str, description: str):
+def dsp_panel(dsp_name: str, logo_filename: str | None, description: str):
     # --- session state for per-DSP results: separate for full & test ---
     if "dsp_results" not in st.session_state:
         st.session_state["dsp_results"] = {"full": {}, "test": {}}
@@ -352,11 +416,12 @@ def dsp_panel(dsp_name: str, logo_filename: str, description: str):
     test_results = st.session_state["dsp_results"]["test"]
 
     # --- header row: logo + text ---
-    col_logo, col_text = st.columns([1, 5])
+    # Make the logo column a bit wider and let the logo fill it.
+    col_logo, col_text = st.columns([1.25, 6.75])
 
     with col_logo:
-        if os.path.exists(logo_filename):
-            st.image(logo_filename, width=56)
+        if logo_filename:
+            show_logo(logo_filename, col_fill=True)
 
     with col_text:
         st.markdown(
@@ -376,12 +441,9 @@ def dsp_panel(dsp_name: str, logo_filename: str, description: str):
     )
     test_mode = mode.startswith("Test")
 
-    # Which result dict are we using for this mode?
     results_dict = test_results if test_mode else full_results
 
-    # In FULL mode, if we don't have a result in this session yet,
-    # try to auto-load the canonical full file from disk so everyone
-    # sees the same "version of the truth".
+    # Auto-load canonical full file (if exists)
     if not test_mode and dsp_name not in full_results:
         default_file = FULL_RESULT_FILES.get(dsp_name)
         if default_file:
@@ -389,7 +451,6 @@ def dsp_panel(dsp_name: str, logo_filename: str, description: str):
             if p.is_file():
                 full_results[dsp_name] = str(p.resolve())
 
-    # --- test countries multiselect ---
     selected_codes = []
     if test_mode:
         st.markdown("##### Countries for test runs (optional)")
@@ -398,7 +459,7 @@ def dsp_panel(dsp_name: str, logo_filename: str, description: str):
             options=COUNTRY_OPTIONS,
             default=st.session_state.get(f"test_countries_{dsp_name}", []),
             label_visibility="collapsed",
-            key=f"countries_{dsp_name}",  # unique per DSP -> no duplicate ID error
+            key=f"countries_{dsp_name}",
         )
         st.session_state[f"test_countries_{dsp_name}"] = selected_labels
         selected_codes = _extract_alpha2(selected_labels)
@@ -413,19 +474,17 @@ def dsp_panel(dsp_name: str, logo_filename: str, description: str):
             test_countries=selected_codes,
         )
         if excel_path:
-            # store *per DSP* + per mode result
             results_dict[dsp_name] = excel_path
             if not test_mode:
                 full_results[dsp_name] = excel_path
 
-    # --- render last result for this DSP + this mode ---
+    # --- render last result ---
     excel_path = results_dict.get(dsp_name)
     if excel_path:
         st.markdown("---")
         render_table(excel_path, dsp_name)
     else:
         if not test_mode:
-            # In full mode, if there isn't even a canonical file, show hint.
             st.info("No full run cached yet for this DSP – run a full scrape to populate it.")
         else:
             st.info("Run a test scrape for this DSP to see results here.")
@@ -473,7 +532,6 @@ st.markdown('<div class="section-heading">Choose your DSP</div>', unsafe_allow_h
 
 main_tabs = st.tabs(["Apple", "Spotify", "Netflix", "Disney+"])
 
-# Apple tab: Apple Music + Apple One + iCloud+
 with main_tabs[0]:
     apple_tabs = st.tabs(["Apple Music", "Apple One", "iCloud+"])
 
@@ -487,10 +545,9 @@ with main_tabs[0]:
     with apple_tabs[1]:
         dsp_panel(
             dsp_name="Apple One",
-            logo_filename="apple_one_logo.png",
+            logo_filename="apple_one_logo_on_black.png",  # <-- put your Apple One logo filename here
             description="Scrape Apple One bundle pricing with currency, plan and country codes.",
         )
-
 
     with apple_tabs[2]:
         dsp_panel(
@@ -499,7 +556,6 @@ with main_tabs[0]:
             description="Scrape iCloud+ storage plan prices by country, including plan size and currency.",
         )
 
-# Spotify tab
 with main_tabs[1]:
     dsp_panel(
         dsp_name="Spotify",
@@ -507,7 +563,6 @@ with main_tabs[1]:
         description="Scrape Spotify Premium plan prices by country using the Playwright-based scraper.",
     )
 
-# Netflix tab
 with main_tabs[2]:
     dsp_panel(
         dsp_name="Netflix",
@@ -515,16 +570,9 @@ with main_tabs[2]:
         description="Scrape Netflix plan pricing for each available country from the Help Center article.",
     )
 
-# Disney+ tab
 with main_tabs[3]:
     dsp_panel(
         dsp_name="Disney+",
         logo_filename="disney_plus_logo.png",
         description="Scrape Disney+ subscription pricing using the Playwright-powered scraper.",
     )
-
-
-
-
-
-
