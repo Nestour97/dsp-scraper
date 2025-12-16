@@ -500,7 +500,7 @@ st.markdown(
         <div class="header-title">DSP PRICE SCRAPER</div>
         <p class="header-subtitle">
             Central hub for Apple Music, Apple One, iCloud+, Spotify, Netflix &amp; Disney+ pricing.
-            Run scrapes on demand, explore the results in a Power BI-style grid,
+            Run scrapes on demand, explore the results,
             and export straight to Excel.
         </p>
         <div class="header-pill">DSP ANALYTICS TOOL</div>
@@ -576,4 +576,5 @@ with main_tabs[3]:
         logo_filename="disney_plus_logo.png",
         description="Scrape Disney+ subscription pricing using the Playwright-powered scraper.",
     )
+
 
