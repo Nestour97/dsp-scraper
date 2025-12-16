@@ -487,7 +487,7 @@ with main_tabs[0]:
     with apple_tabs[1]:
         dsp_panel(
             dsp_name="Apple One",
-            logo_filename="apple_one_logo_on_black.png",
+            logo_filename="apple_one_logo.png",
             description="Scrape Apple One bundle pricing with currency, plan and country codes.",
         )
 
@@ -522,6 +522,7 @@ with main_tabs[3]:
         logo_filename="disney_plus_logo.png",
         description="Scrape Disney+ subscription pricing using the Playwright-powered scraper.",
     )
+
 
 
 
