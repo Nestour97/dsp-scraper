@@ -237,8 +237,8 @@ st.markdown(
 # ===================== LOGO HELPERS =====================
 
 # 👇 One knob to adjust all DSP logo sizes
-LOGO_WIDTH_PX = 88        # try 80–100
-LOGO_CANVAS_PX = 240      # internal quality/consistency
+LOGO_WIDTH_PX = 95        # try 80–100
+LOGO_CANVAS_PX = 250      # internal quality/consistency
 
 def _logo_bytes_cropped(path: str) -> Optional[bytes]:
     """
@@ -568,3 +568,4 @@ with main_tabs[3]:
         logo_filename="disney_plus_logo.png",
         description="Scrape Disney+ subscription pricing using the Playwright-powered scraper.",
     )
+
