@@ -487,8 +487,8 @@ st.markdown(
     <div class="header-wrapper">
         <div class="header-title">DSP PRICE SCRAPER</div>
         <p class="header-subtitle">
-            Central hub for Apple Music, Apple One, iCloud+, Spotify, Netflix &amp; Disney+ pricing.
-            Run scrapes on demand, explore the results in a Power BI-style grid,
+            Central hub for Apple Music, Apple One, iCloud+, Spotify, Netflix; Disney+ pricing.
+            Run scrapes on demand, explore the results in a table,
             and export straight to Excel.
         </p>
         <div class="header-pill">DSP ANALYTICS TOOL</div>
@@ -505,7 +505,7 @@ st.markdown(
             <li>Select <b>Apple</b>, <b>Spotify</b>, <b>Netflix</b> or <b>Disney+</b> in the tabs below.</li>
             <li>Within Apple you can choose between <b>Apple Music</b>, <b>Apple One</b> and <b>iCloud+</b>.</li>
             <li>Use <b>Full</b> mode for a complete global run, or <b>Test</b> for a quick sample.</li>
-            <li>Click <b>Run scraper</b> to launch the underlying Python code for that DSP.</li>
+            <li>Click <b>Run scraper</b> to launch the underlying code for that DSP.</li>
             <li>Track progress with a live percentage, elapsed time and estimated remaining time.</li>
             <li>Explore and download the results from the interactive table.</li>
         </ul>
@@ -550,7 +550,7 @@ with main_tabs[1]:
     dsp_panel(
         dsp_name="Spotify",
         logo_filename="spotify_logo.png",
-        description="Scrape Spotify Premium plan prices by country using the Playwright-based scraper.",
+        description="Scrape Spotify Premium pricing with currency, plan and country codes.",
     )
 
 # Netflix tab
@@ -558,7 +558,7 @@ with main_tabs[2]:
     dsp_panel(
         dsp_name="Netflix",
         logo_filename="netflix_logo.png",
-        description="Scrape Netflix plan pricing for each available country from the Help Center article.",
+        description="Scrape Netflix pricing with currency, plan and country codes.",
     )
 
 # Disney+ tab
@@ -566,7 +566,8 @@ with main_tabs[3]:
     dsp_panel(
         dsp_name="Disney+",
         logo_filename="disney_plus_logo.png",
-        description="Scrape Disney+ subscription pricing using the Playwright-powered scraper.",
+        description="Scrape Disney+ pricing with currency, plan and country codes.",
     )
+
 
 
