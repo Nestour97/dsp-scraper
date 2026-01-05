@@ -4,17 +4,14 @@
 # - Strong redirect detection
 # - Robust currency parsing (Spotify-style)
 # - Multi-language recurring-price selection (avoids intro/trial prices)
-# - Fixes (Dec 2025):
+# - Fixes (Jan 2026):
 #   * BR/ID and other locales: prevents "promo/intro" price being selected as recurring
 #   * Avoids selecting prices from unrelated page sections (e.g., iCloud prices)
 #   * Prevents "all plans get same price" by strictly isolating each plan tile/container
 #   * Adds Indonesian/Portuguese "then/intro" language support (kemudian/selama, três meses, etc.)
 #   * If Individual is missing/promo-only, fills it from music.apple.com recurring banner price
-# - Fixes (Jan 2026):
-#   * Adds TL/TRY detection so Turkey gets correct TRY prices
-#   * Stops country-code mis-detection (TR becoming AT)
-#   * Adds FAQ-based price parser ("How much does Apple Music cost?")
-#     to override promo prices (fixes Brazil duplicate/intro prices)
+#   * Fixes country-code confusion (e.g. TR incorrectly mapped to AT)
+#   * Improves plan-name matching for Nordic and PT locales (e.g. Sweden "Personligt"/"Familj")
 # ------------------------------------------------------------
 
 import re, time, threading, sqlite3, asyncio
@@ -92,10 +89,9 @@ MISSING_BUFFER = []
 # includes fullwidth yen ￥, adds RMB/CN¥ support
 CURRENCY_CHARS = r"[$€£¥￥₩₫₱₹₪₭₮₦₲₴₡₵₺₼₸៛₨₥₾฿]"
 
-# --- UPDATED: added TL / TRY / ₺ ---
 CURRENCY_TOKEN = (
-    r"(RMB|CN¥|US\$|CA\$|AU\$|HK\$|NT\$|MOP\$|NZ\$|RM|S/\.|R\$|CHF|Rp|kr|TL|TRY|"
-    r"\$|€|£|¥|￥|₩|₫|₱|₹|₪|₭|₮|₦|₲|₴|₡|₵|₺|₸|TSh|KSh|USh|ZAR|ZWL|R|"
+    r"(RMB|CN¥|US\$|CA\$|AU\$|HK\$|NT\$|MOP\$|NZ\$|RM|S/\.|R\$|CHF|Rp|kr|"
+    r"\$|€|£|¥|￥|₩|₫|₱|₹|₪|₭|₮|₦|₲|₴|₸|TSh|KSh|USh|ZAR|ZWL|R|"
     r"SAR|QAR|AED|KWD|BHD|OMR)"
 )
 
@@ -134,7 +130,7 @@ TEST_MODE = False
 TEST_COUNTRIES = [
     "US", "AF", "DZ", "AR", "BR", "BG", "CO", "ID", "IN", "IQ",
     "HK", "NO", "DK", "MO", "CN", "KW", "SA", "ZA", "JP", "KR",
-    "EC", "BO", "KZ", "NG", "PH", "PK", "KH", "RU", "AM", "TR", "TJ"
+    "EC", "BO", "KZ", "NG", "PH", "PK", "KH", "RU", "AM", "TR", "TJ", "SE"
 ]
 
 APPLE_US_HUB = "https://www.apple.com/apple-music/"
@@ -189,11 +185,9 @@ HARDCODE_FALLBACKS = {
 }
 KNOWN_ISO = set(HARDCODE_FALLBACKS.values())
 
-# --- UPDATED: TL/TRY strong token ---
 STRONG_TOKENS = [
     (r"(?i)\bRMB\b", "CNY"),
     (r"CN¥", "CNY"),
-    (r"(?i)\bTL\b", "TRY"),
     (r"(?i)US\$", "USD"), (r"(?i)\$US", "USD"), (r"(?i)U\$S", "USD"),
     (r"(?i)\bA\$", "AUD"), (r"(?i)\bNZ\$", "NZD"), (r"(?i)\bHK\$", "HKD"),
     (r"(?i)\bNT\$", "TWD"), (r"(?i)\bS\$", "SGD"), (r"(?i)\bRD\$", "DOP"),
@@ -487,9 +481,24 @@ def log_missing(country, code, url, reason):
 # ================= DOM parsing =================
 
 PLAN_RE = {
-    "Student": re.compile(r"(?i)\b(student|estudiante|étudiant|etudiant|schüler|schueler|студент|학생|sinh\s+viên|pelajar)\b|学生|學生|pelajar"),
-    "Individual": re.compile(r"(?i)\b(individual|personal|individuale|individuel|individuell|individuo|perorangan|perseorangan)\b|個人|个人|개인|perorangan"),
-    "Family": re.compile(r"(?i)\b(family|familia|famille|familie|famiglia|fam[íi]lia|keluarga)\b|家族|家庭|가족|keluarga"),
+    "Student": re.compile(
+        r"(?i)\b("
+        r"student|estudiante|estudante|estudantes|étudiant|etudiant|schüler|schueler|"
+        r"universitario|universitaria|universit[aá]rio|universit[aá]ria|"
+        r"студент|학생|sinh\s+viên|pelajar"
+        r")\b|学生|學生"
+    ),
+    "Individual": re.compile(
+        r"(?i)\b("
+        r"individual|personal|personligt|personlig|individuale|individuel|individuell|"
+        r"individuo|perorangan|perseorangan"
+        r")\b|個人|个人|개인"
+    ),
+    "Family": re.compile(
+        r"(?i)\b("
+        r"family|familia|famille|familie|familj|famiglia|fam[íi]lia|familiar|keluarga"
+        r")\b|家族|家庭|가족"
+    ),
 }
 
 def _plan_hits(text: str):
@@ -499,17 +508,19 @@ def _plan_hits(text: str):
             hits.add(plan)
     return hits
 
+# Monthly indicator: only true when "per month" (or equivalent) is near the price,
+# not for "3 months for X" trial phrases.
 MONTHLY_POS_RE = re.compile(
     r"(?i)("
-    r"/\s*month\b|per\s+month\b|monthly\b|/\s*mo\b|/\s*mth\b|"
-    r"\bal\s+m[eéê]s\b|\bpor\s+m[eéê]s\b|/m[eéê]s\b|\bmensual(?:es)?\b|"
-    r"\bmensal\b|"
-    r"\bpar\s+mois\b|/mois\b|\bmensuel(?:le|s)?\b|"
-    r"\bpro\s+monat\b|/monat\b|\bmonatlich\b|"
-    r"\bal\s+mese\b|/mese\b|\bmensile\b|"
-    r"\bper\s+maand\b|/maand\b|\bmaandelijks\b|"
-    r"/月|毎月|每月|月額|/월|매월|"
-    r"/(?:bulan|ay|เดือน)\b|per\s+bulan\b|ayl[ıi]k\b|ต่อเดือน\b|/bulan\b"
+    r"/\s*(?:month|mois|mes|mese|meses|monat|monate|m[eå]nad|m[eå]ned|bulan|ay|월|月)\b"
+    r"|"
+    r"\bper\s+(?:month|mois|mes|mese|meses|monat|monate|m[eå]nad|m[eå]ned|bulan|ay|월|月)\b"
+    r"|"
+    r"\bpor\s+m[eéê]s\b"
+    r"|"
+    r"\bal\s+m[eéê]s\b"
+    r"|"
+    r"\bmensal\b|\bmensual(?:es)?\b|\bmensuel(?:le|s)?\b|\bmonatlich\b|\bmensile\b"
     r")"
 )
 
@@ -522,7 +533,8 @@ THEN_POS_RE = re.compile(
     r"之后|以後|その後|以降|"
     r"이후|다음|"
     r"depois|ap[oó]s|"
-    r"kemudian|selanjutnya|setelah|lalu"
+    r"kemudian|selanjutnya|setelah|lalu|"
+    r"därefter"
     r")\b"
 )
 
@@ -553,6 +565,13 @@ INTRO_NEG_RE = re.compile(
 )
 
 def pick_best_price_token(text: str):
+    """
+    Pick the best recurring monthly price token from a chunk of text.
+
+    - Prefers tokens near explicit "per month" wording (MONTHLY_POS_RE) in a *local* window.
+    - Uses THEN_POS_RE to prefer tokens appearing after "then/thereafter" phrases.
+    - Uses INTRO_NEG_RE and simple heuristics to avoid obvious intro / trial prices.
+    """
     if not text:
         return None
 
@@ -566,6 +585,7 @@ def pick_best_price_token(text: str):
 
     any_intro = False
     candidates = []
+    n = len(s)
 
     for m in matches:
         tok = m.group(0)
@@ -578,15 +598,22 @@ def pick_best_price_token(text: str):
             continue
 
         start, end = m.span()
-        context = s[max(0, start - 80): min(len(s), end + 80)]
 
-        has_month = bool(MONTHLY_POS_RE.search(context))
+        # Local right/left windows for "per month" wording
+        right_ctx = s[end : min(n, end + 40)]
+        left_ctx = s[max(0, start - 40) : start]
+
+        has_month = bool(MONTHLY_POS_RE.search(right_ctx) or MONTHLY_POS_RE.search(left_ctx))
+
+        # Broader context for intro / "then" detection
+        context = s[max(0, start - 80) : min(n, end + 80)]
         has_intro = bool(INTRO_NEG_RE.search(context))
-        has_then  = bool(THEN_POS_RE.search(context))
+        has_then = bool(THEN_POS_RE.search(context))
         after_pivot = (pivot is not None and start > pivot)
 
         any_intro = any_intro or has_intro
 
+        # very small numeric tokens are likely footnotes (e.g. "* Footnote 3")
         if val < 10 and not re.search(r"[.,]\d{1,2}\b", tok):
             footnote_like = True
         else:
@@ -626,6 +653,7 @@ def pick_best_price_token(text: str):
 
         best = max(monthly, key=score)
 
+        # If we have a pivot ("then/thereafter"), prefer prices after that pivot
         if pivot is not None and not best["after_pivot"]:
             later = [c for c in monthly if c["after_pivot"]]
             if later:
@@ -643,9 +671,12 @@ def pick_best_price_token(text: str):
             best = max(after, key=k)
             return best["token"], best["value"]
 
+    # If *everything* looks like intro/trial and we have no pivot/monthly hint,
+    # bail out so that the caller can fall back to another source (e.g. banner).
     if any_intro:
         return None
 
+    # Last resort: biggest numeric value in the text
     best = max(candidates, key=lambda c: c["value"])
     return best["token"], best["value"]
 
@@ -677,12 +708,13 @@ def _get_plans_container(soup: BeautifulSoup) -> Tag:
     candidates = list(soup.find_all("section"))
     if not candidates:
         candidates = list(soup.find_all("div"))
+
     for node in candidates:
         txt = " ".join(node.stripped_strings)
         if not txt:
             continue
         hits = _plan_hits(txt)
-        if len(hits) < 2:
+        if len(hits) < 1:  # at least one plan keyword
             continue
         if not BANNER_PRICE_REGEX.search(txt):
             continue
@@ -757,8 +789,8 @@ def extract_plan_entries_semantic(section: Tag, alpha2: str):
 
     return entries
 
-def extract_plan_entries_from_dom_apple(section_soup: BeautifulSoup, alpha2: str):
-    section = _get_plans_container(section_soup)
+def extract_plan_entries_from_dom_apple(soup: BeautifulSoup, alpha2: str):
+    section = _get_plans_container(soup)
     entries = extract_plan_entries_semantic(section, alpha2)
 
     if len(entries) < 3:
@@ -882,141 +914,11 @@ def extract_plan_entries_from_dom_generic(soup: BeautifulSoup, alpha2: str):
             )
     return entries
 
-# --------- NEW: FAQ-based recurring price extraction ----------
-
-def _find_cost_faq_answer_text(soup: BeautifulSoup) -> str:
-    """
-    Locate the 'How much does Apple Music cost?' FAQ (in any language)
-    and return the text of its answer as a single string.
-    """
-    for heading in soup.find_all(["h2", "h3", "h4"]):
-        q = _clean(heading.get_text(" ", strip=True))
-        if not q:
-            continue
-
-        trans_q = translate_text_cached(q)
-        tq = trans_q.lower()
-
-        # Only keep "how much" type questions
-        if "how much" not in tq:
-            continue
-
-        # Collect siblings as the answer until the next heading
-        chunks = []
-        for sib in heading.next_siblings:
-            if isinstance(sib, Tag):
-                if sib.name in ("h2", "h3", "h4"):
-                    break
-                chunks.append(" ".join(sib.stripped_strings))
-        answer = " ".join(chunks).strip()
-        if not answer:
-            continue
-
-        combo = (q + " " + answer).lower()
-        if "apple music" not in combo:
-            trans_a = translate_text_cached(answer)
-            if "apple music" not in (trans_q + " " + trans_a).lower():
-                continue
-
-        return answer
-
-    return ""
-
-def extract_plan_entries_from_faq_cost(soup: BeautifulSoup, alpha2: str):
-    """
-    Use the 'How much does Apple Music cost?' FAQ answer to get the
-    canonical recurring prices for Student / Individual / Family.
-
-    Works especially well for promo-heavy pages (e.g. Brazil, Turkey).
-    """
-    answer_text = _find_cost_faq_answer_text(soup)
-    if not answer_text:
-        return {}
-
-    translated = translate_text_cached(answer_text)
-    if "student" not in translated:
-        return {}
-
-    s = normalize_for_price_extraction(answer_text)
-    matches = list(BANNER_PRICE_REGEX.finditer(s))
-    if not matches:
-        return {}
-
-    tokens = []
-    seen_vals = set()
-
-    for m in matches:
-        tok = m.group(0)
-        num = extract_amount_number(tok)
-        if not num:
-            continue
-        try:
-            val = float(num)
-        except Exception:
-            continue
-
-        key = round(val, 4)
-        if key in seen_vals:
-            continue
-        seen_vals.add(key)
-        tokens.append((tok, val))
-
-        if len(tokens) >= 3:
-            break
-
-    if len(tokens) < 3:
-        return {}
-
-    entries = {}
-    for idx, std in enumerate(TIER_ORDER):
-        tok, val = tokens[idx]
-
-        iso, src, raw_cur = detect_currency_from_display(tok, alpha2)
-        if src in {"ambiguous_symbol->default", "territory_default"}:
-            iso2, src2 = detect_currency_in_text(answer_text, alpha2)
-            if iso2 and src2 in {"symbol", "code"}:
-                iso, src = iso2, f"context-{src2}"
-            iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, val, alpha2, answer_text)
-            if why:
-                iso, src = iso_res, f"heuristic-{why}"
-
-        entries[std] = {
-            "Currency": iso,
-            "Currency Source": src,
-            "Currency Raw": raw_cur,
-            "Price Display": _clean(tok),
-            "Price Value": val,
-        }
-
-    return entries
-
-# --------- UPDATED main DOM extraction to incorporate FAQ -----
-
-
 def extract_plan_entries_from_dom(soup: BeautifulSoup, alpha2: str):
-    """
-    1) Try Apple-specific DOM logic (tiles/cards).
-    2) Overlay canonical prices from the 'How much does Apple Music cost?'
-       FAQ answer (if present) – this fixes promo pages like BR/TR.
-    3) If still empty, fall back to the generic pricing parser plus FAQ.
-    """
-    entries = extract_plan_entries_from_dom_apple(soup, alpha2) or {}
-
-    # FAQ prices override tiles when present
-    faq_entries = extract_plan_entries_from_faq_cost(soup, alpha2)
-    if faq_entries:
-        entries.update(faq_entries)
-
+    entries = extract_plan_entries_from_dom_apple(soup, alpha2)
     if entries:
         return entries
-
-    # Apple-specific heuristics failed; try generic
-    entries = extract_plan_entries_from_dom_generic(soup, alpha2) or {}
-    if faq_entries:
-        for plan, info in faq_entries.items():
-            entries.setdefault(plan, info)
-
-    return entries
+    return extract_plan_entries_from_dom_generic(soup, alpha2)
 
 # ================= Banner fallback =================
 
@@ -1232,7 +1134,7 @@ def scrape_country(alpha2: str):
                 had_apple_page = True
 
             if cc != "US" and looks_like_us_hub_url(resp.url):
-                cn = normalize_country_name(get_country_name_from_code(cc))
+                cn = get_country_name_from_code(cc)
                 return banner_individual_row(
                     cc, cn,
                     meta={
@@ -1246,7 +1148,7 @@ def scrape_country(alpha2: str):
 
             final_cc = _extract_cc(resp.url)
             if final_cc and not _storefront_equivalent(cc, final_cc):
-                cn = normalize_country_name(get_country_name_from_code(cc))
+                cn = get_country_name_from_code(cc)
                 return banner_individual_row(
                     cc, cn,
                     meta={
@@ -1264,7 +1166,7 @@ def scrape_country(alpha2: str):
             soup = BeautifulSoup(resp.text, "html.parser")
 
             if cc != "US" and looks_like_us_hub_html(soup):
-                cn = normalize_country_name(get_country_name_from_code(cc))
+                cn = get_country_name_from_code(cc)
                 return banner_individual_row(
                     cc, cn,
                     meta={
@@ -1276,11 +1178,9 @@ def scrape_country(alpha2: str):
                     },
                 )
 
-            country_name = normalize_country_name(get_country_name_from_code(cc))
+            country_name = get_country_name_from_code(cc)
             country_name = MANUAL_COUNTRY_FIXES.get(country_name, country_name)
-
-            # --- UPDATED: keep the original alpha2 as truth; don't recompute from name ---
-            code = cc.upper()
+            code = cc  # trust ISO alpha-2 instead of round-tripping via translation
 
             entries = extract_plan_entries_from_dom(soup, code)
 
@@ -1327,6 +1227,7 @@ def scrape_country(alpha2: str):
             if rows:
                 return rows
 
+            # nothing found on apple.com page → fall back to banner as Individual only
             return banner_individual_row(
                 code, country_name,
                 meta={
@@ -1341,7 +1242,7 @@ def scrape_country(alpha2: str):
         except Exception:
             continue
 
-    cn = normalize_country_name(get_country_name_from_code(cc))
+    cn = get_country_name_from_code(cc)
     return banner_individual_row(
         cc, cn,
         meta={
@@ -1393,7 +1294,7 @@ def run_scraper(country_codes_override=None):
                     all_rows.extend(res)
             except Exception as e:
                 failed_codes.append(cc)
-                cn = normalize_country_name(get_country_name_from_code(cc))
+                cn = get_country_name_from_code(cc)
                 log_missing(
                     cn,
                     cc,
@@ -1408,9 +1309,10 @@ def run_scraper(country_codes_override=None):
                 res = scrape_country(cc)
                 if res:
                     all_rows.extend(res)
+                    # drop entries we incorrectly logged for this cc
                     MISSING_BUFFER[:] = [m for m in MISSING_BUFFER if m.get("country_code") != cc]
             except Exception as e:
-                cn = normalize_country_name(get_country_name_from_code(cc))
+                cn = get_country_name_from_code(cc)
                 log_missing(
                     cn,
                     cc,
