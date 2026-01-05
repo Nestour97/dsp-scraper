@@ -1,17 +1,14 @@
-# apple_music_scraper.py
+# apple_music_plans_robust.py
 # ------------------------------------------------------------
-# Apple Music scraper with:
-# - Strong redirect detection
-# - Robust currency parsing (Spotify-style)
-# - Multi-language recurring-price selection (avoids intro/trial prices)
-# - Fixes (Jan 2026):
-#   * BR/ID and other locales: prevents "promo/intro" price being selected as recurring
-#   * Avoids selecting prices from unrelated page sections (e.g., iCloud prices)
-#   * Prevents "all plans get same price" by strictly isolating each plan tile/container
-#   * Adds Indonesian/Portuguese "then/intro" language support (kemudian/selama, três meses, etc.)
-#   * If Individual is missing/promo-only, fills it from music.apple.com recurring banner price
-#   * Fixes country-code confusion (e.g. TR incorrectly mapped to AT)
-#   * Improves plan-name matching for Nordic and PT locales (e.g. Sweden "Personligt"/"Familj")
+# Apple Music scraper (robust)
+# - Picks RECURRING monthly price (not intro/trial):
+#     1) prefer tokens whose nearby translated context contains "then/after/thereafter"
+#     2) else prefer tokens whose nearby translated context looks monthly (/month, per month, monthly, etc.)
+#     3) else choose MAX numeric token (trial is almost always smaller)
+# - Fixes Turkey missing by supporting "TL" (TRY) token
+# - Fixes Hungary "Ft" currency raw token and supports other letter tokens (Kč, zł, lei, лв, etc.)
+# - Robust redirect detection + currency parsing (no 'TRY' false positives)
+# - Banner fallback also picks recurring token (not first match)
 # ------------------------------------------------------------
 
 import re, time, threading, sqlite3, asyncio
@@ -35,7 +32,6 @@ from functools import lru_cache
 
 MAX_WORKERS = 6
 
-# Robust session
 SESSION = requests.Session()
 SESSION.mount(
     "https://",
@@ -56,6 +52,7 @@ SESSION.headers.update(
     }
 )
 
+# Translation (for language-agnostic heuristics)
 translator = GoogleTranslator(source="auto", target="en")
 
 TIER_ORDER = ["Student", "Individual", "Family"]
@@ -68,42 +65,56 @@ MANUAL_REGION_METADATA = {
     "PR": {"name": "Puerto Rico"},
 }
 
-# CN uses a different host
 APPLE_BASE_BY_CC = {"CN": "https://www.apple.com.cn"}
 
 REGION_LOCALE_PATHS = {
     "HK": ["hk/en", "hk/zh", "hk/zh-tw", "hk-zh", "hk-zh-tw", "hk"],
     "MO": ["mo/en", "mo/zh", "mo/zh-tw", "mo-zh", "mo-zh-tw", "mo"],
-    "CN": [""],  # -> https://www.apple.com.cn/apple-music/
+    "CN": [""],
 }
-# ensure correct storefront paths for US and GB
-REGION_LOCALE_PATHS.update({
-    "US": [""],          # -> https://www.apple.com/apple-music/
-    "GB": ["uk", "gb"],  # -> https://www.apple.com/uk/apple-music/ then /gb/ as fallback
-})
+REGION_LOCALE_PATHS.update(
+    {
+        "US": [""],
+        "GB": ["uk", "gb"],
+    }
+)
 
 MISSING_DB = "apple_music_missing.sqlite"
 MISSING_CSV = "apple_music_missing.csv"
 MISSING_BUFFER = []
 
-# includes fullwidth yen ￥, adds RMB/CN¥ support
-CURRENCY_CHARS = r"[$€£¥￥₩₫₱₹₪₭₮₦₲₴₡₵₺₼₸៛₨₥₾฿]"
+# Symbol currencies (for quick hinting)
+CURRENCY_CHARS = r"[$€£¥₩₫₱₹₪₭₮₦₲₴₡₵₺₼₸៛₨₥₾฿₽]"
 
+# --- IMPORTANT: Add letter/locale tokens used on Apple pages ---
+LOCAL_CURRENCY_TOKENS = [
+    r"\bTL\b",   # Turkey (often "59,99 TL")
+    r"\bFt\b",   # Hungary (often "1990 Ft/hó")
+    r"zł",       # Poland
+    r"Kč",       # Czechia
+    r"\blei\b",  # Romania
+    r"лв",       # Bulgaria
+    r"\bгрн\b",  # Ukraine (UAH, occasionally in Cyrillic)
+    r"\b₽\b",    # Ruble sign (sometimes appears as symbol; kept for safety)
+]
+
+# Currency tokenization: used by price regex to capture "currency + number" or "number + currency"
+# Keep specific tokens before generic ones (e.g., Rp before R).
 CURRENCY_TOKEN = (
-    r"(RMB|CN¥|US\$|CA\$|AU\$|HK\$|NT\$|MOP\$|NZ\$|RM|S/\.|R\$|CHF|Rp|kr|"
-    r"\$|€|£|¥|￥|₩|₫|₱|₹|₪|₭|₮|₦|₲|₴|₸|TSh|KSh|USh|ZAR|ZWL|R|"
+    r"(US\$|CA\$|AU\$|HK\$|NT\$|MOP\$|NZ\$|"
+    + "|".join(LOCAL_CURRENCY_TOKENS) +
+    r"|RM|S/\.|R\$|CHF|Rp|kr|"
+    r"\$|€|£|¥|₩|₫|₱|₹|₪|₭|₮|₦|₲|₴|₸|₺|₽|"
+    r"TSh|KSh|USh|ZAR|ZWL|R|"
     r"SAR|QAR|AED|KWD|BHD|OMR)"
 )
 
-# allow spaces as thousand separators, e.g. "₸1 490,00" or "1 490.00"
 NUMBER_TOKEN = r"(\d+(?:[.,\s]\d{3})*(?:[.,]\d{1,2})?)"
 
-# allow arbitrary whitespace between currency and number and vice versa
 BANNER_PRICE_REGEX = re.compile(
-    rf"(?:{CURRENCY_TOKEN}\s*{NUMBER_TOKEN}|{NUMBER_TOKEN}\s*{CURRENCY_TOKEN})\*?"
+    rf"(?:{CURRENCY_TOKEN}\s*{NUMBER_TOKEN}|{NUMBER_TOKEN}\s*{CURRENCY_TOKEN})"
 )
 
-# stricter numeric pattern, also allowing spaces as thousands separators
 STRICT_PRICE_NUMBER = re.compile(
     r"(\d{1,3}(?:[.,\s]\d{3})+|\d+[.,]\d{1,2})"
 )
@@ -126,19 +137,23 @@ MANUAL_COUNTRY_FIXES = {
     "Greek": "Greece",
 }
 
-TEST_MODE = False
-TEST_COUNTRIES = [
-    "US", "AF", "DZ", "AR", "BR", "BG", "CO", "ID", "IN", "IQ",
-    "HK", "NO", "DK", "MO", "CN", "KW", "SA", "ZA", "JP", "KR",
-    "EC", "BO", "KZ", "NG", "PH", "PK", "KH", "RU", "AM", "TR", "TJ", "SE"
-]
+TEST_MODE = True
+TEST_COUNTRIES = ["US", "KW", "ID", "IN", "TR", "HU", "FR"]
 
-APPLE_US_HUB = "https://www.apple.com/apple-music/"
-
-# ================= Spotify-style currency logic =================
+# ================= Utilities =================
 
 def _clean(s: str) -> str:
     return (s or "").replace("\xa0", " ").strip()
+
+def _cast_num(x):
+    try:
+        if isinstance(x, int) or x is None:
+            return x
+        if isinstance(x, float) and abs(x - int(x)) < 1e-9:
+            return int(x)
+    except Exception:
+        pass
+    return x
 
 @lru_cache(maxsize=4096)
 def translate_text_cached(text: str) -> str:
@@ -146,6 +161,8 @@ def translate_text_cached(text: str) -> str:
         return (translator.translate(text or "") or "").lower()
     except Exception:
         return (text or "").lower()
+
+# ================= Currency logic =================
 
 HARDCODE_FALLBACKS = {
     # Americas + dollarised
@@ -159,9 +176,10 @@ HARDCODE_FALLBACKS = {
     "GB": "GBP", "IE": "EUR", "FR": "EUR", "DE": "EUR", "ES": "EUR", "IT": "EUR",
     "PT": "EUR", "NL": "EUR", "BE": "EUR", "LU": "EUR", "AT": "EUR", "FI": "EUR",
     "EE": "EUR", "LV": "EUR", "LT": "EUR", "SK": "EUR", "SI": "EUR", "GR": "EUR",
-    "CY": "EUR", "MT": "EUR", "BG": "BGN", "RO": "RON", "PL": "PLN", "CZ": "CZK",
-    "HU": "HUF", "HR": "EUR", "DK": "DKK", "SE": "SEK", "NO": "NOK", "IS": "ISK",
-    "CH": "CHF", "RS": "RSD", "BA": "BAM", "MK": "MKD", "AL": "ALL",
+    "CY": "EUR", "MT": "EUR",
+    "BG": "BGN", "RO": "RON", "PL": "PLN", "CZ": "CZK", "HU": "HUF", "HR": "EUR",
+    "DK": "DKK", "SE": "SEK", "NO": "NOK", "IS": "ISK", "CH": "CHF",
+    "RS": "RSD", "BA": "BAM", "MK": "MKD", "AL": "ALL",
     "UA": "UAH", "GE": "GEL", "AZ": "AZN", "AM": "AMD", "KZ": "KZT", "MD": "MDL",
     "BY": "BYN", "TR": "TRY", "RU": "RUB",
 
@@ -178,42 +196,44 @@ HARDCODE_FALLBACKS = {
     "JP": "JPY", "KR": "KRW", "CN": "CNY", "TW": "TWD", "HK": "HKD", "MO": "MOP",
     "SG": "SGD", "MY": "MYR", "TH": "THB", "VN": "VND", "PH": "PHP", "ID": "IDR",
     "IN": "INR", "PK": "PKR", "LK": "LKR", "NP": "NPR", "BD": "BDT",
-    # manual override: Cambodia uses USD in this scraper
     "KH": "USD", "MN": "MNT", "TJ": "TJS",
     "AU": "AUD", "NZ": "NZD",
     "KI": "AUD", "NR": "AUD", "TV": "AUD", "MH": "USD",
 }
 KNOWN_ISO = set(HARDCODE_FALLBACKS.values())
 
+# Strong tokens (explicit/unambiguous). Add TL/Ft etc.
 STRONG_TOKENS = [
-    (r"(?i)\bRMB\b", "CNY"),
-    (r"CN¥", "CNY"),
+    # Apple locale abbreviations
+    (r"(?i)\bTL\b", "TRY"),
+    (r"(?i)\bFt\b", "HUF"),
+    (r"zł", "PLN"),
+    (r"Kč", "CZK"),
+    (r"(?i)\blei\b", "RON"),
+    (r"лв", "BGN"),
+
+    # Explicit USD markers
     (r"(?i)US\$", "USD"), (r"(?i)\$US", "USD"), (r"(?i)U\$S", "USD"),
+
+    # Other $-prefixes
     (r"(?i)\bA\$", "AUD"), (r"(?i)\bNZ\$", "NZD"), (r"(?i)\bHK\$", "HKD"),
     (r"(?i)\bNT\$", "TWD"), (r"(?i)\bS\$", "SGD"), (r"(?i)\bRD\$", "DOP"),
     (r"(?i)\bN\$", "NAD"),
-    (r"R\$", "BRL"), (r"S/\.", "PEN"), (r"S/", "PEN"), (r"Bs\.?", "BOB"),
-    (r"Gs\.?", "PYG"), (r"₲", "PYG"), (r"Q(?=[\s\d])", "GTQ"),
-    (r"KSh", "KES"), (r"TSh", "TZS"), (r"USh", "UGX"), (r"Rp", "IDR"),
+
+    # Common tokens
+    (r"R\$", "BRL"), (r"S/\.", "PEN"), (r"S/", "PEN"),
+    (r"Bs\.?", "BOB"), (r"Gs\.?", "PYG"), (r"₲", "PYG"),
+    (r"Q(?=[\s\d])", "GTQ"),
+    (r"KSh", "KES"), (r"TSh", "TZS"), (r"USh", "UGX"),
+    (r"Rp", "IDR"),
     (r"€", "EUR"), (r"£", "GBP"), (r"₹", "INR"),
     (r"(?<![A-Z])R\s?(?=\d)", "ZAR"),
 ]
 
 SINGLE_SYMBOL_TO_ISO = {
-    "₩": "KRW",
-    "₫": "VND",
-    "₺": "TRY",
-    "₪": "ILS",
-    "₴": "UAH",
-    "₼": "AZN",
-    "₾": "GEL",
-    "₭": "LAK",
-    "฿": "THB",
-    "₦": "NGN",
-    "₵": "GHS",
-    "₱": "PHP",
-    "₸": "KZT",
-    "￥": "JPY",  # refined by CC logic in detect_currency_* (CN -> CNY, JP -> JPY)
+    "₩": "KRW", "₫": "VND", "₺": "TRY", "₪": "ILS", "₴": "UAH",
+    "₼": "AZN", "₾": "GEL", "₭": "LAK", "฿": "THB", "₦": "NGN",
+    "₵": "GHS", "₱": "PHP", "₸": "KZT", "₽": "RUB",
 }
 
 AMBIG_TOKENS = {
@@ -249,21 +269,18 @@ def detect_currency_in_text(text: str, alpha2: str):
         if re.search(pat, s):
             return iso, "symbol"
 
-    if ("¥" in s or "￥" in s) and not re.search(r"[A-Z]{3}", s, re.I):
+    if "¥" in s and not re.search(r"[A-Z]{3}", s, re.I):
         cc = (alpha2 or "").upper()
         return ("CNY" if cc == "CN" else "JPY" if cc == "JP" else default_currency_for_alpha2(cc), "symbol")
 
     for sym, iso in SINGLE_SYMBOL_TO_ISO.items():
         if sym in s:
-            if sym in {"¥", "￥"}:
-                cc = (alpha2 or "").upper()
-                return ("CNY" if cc == "CN" else "JPY" if cc == "JP" else default_currency_for_alpha2(cc), "symbol")
             return iso, "symbol"
 
     S = s.upper()
     for m in re.finditer(r"\b([A-Z]{3})\b", S):
         code = m.group(1)
-        if code == "TRY":  # avoid "Try 1 month free"
+        if code == "TRY":
             continue
         if code in KNOWN_ISO:
             a, b = m.span()
@@ -287,23 +304,16 @@ def detect_currency_from_display(display_text: str, alpha2: str):
         if m:
             return iso, "symbol", m.group(0)
 
-    if ("¥" in s or "￥" in s) and not re.search(r"[A-Z]{3}", s, re.I):
+    if "¥" in s and not re.search(r"[A-Z]{3}", s, re.I):
         cc = (alpha2 or "").upper()
         return (
             "CNY" if cc == "CN" else "JPY" if cc == "JP" else default_currency_for_alpha2(cc),
             "symbol",
-            "¥" if "¥" in s else "￥",
+            "¥",
         )
 
     for sym, iso in SINGLE_SYMBOL_TO_ISO.items():
         if sym in s:
-            if sym in {"¥", "￥"}:
-                cc = (alpha2 or "").upper()
-                return (
-                    "CNY" if cc == "CN" else "JPY" if cc == "JP" else default_currency_for_alpha2(cc),
-                    "symbol",
-                    sym,
-                )
             return iso, "symbol", sym
 
     S = s.upper()
@@ -363,7 +373,6 @@ def extract_amount_number(text: str) -> str:
         return ""
     t = _clean(text)
     S = t.upper()
-
     num_pat = r"\d[\d\s.,]*"
 
     for pat, _ in STRONG_TOKENS:
@@ -382,7 +391,7 @@ def extract_amount_number(text: str) -> str:
         return _normalize_number(m.group(1))
 
     m = re.search(
-        r"(?:RMB|CN¥|US\$|[€£¥￥₩₫₺₪₴₼₾₭฿₦₵₱₸]|NT\$|HK\$|S/\.|S/|R\$|RD\$|N\$|KSh|TSh|USh|Rp)\s*" + num_pat,
+        r"(?:US\$|[€£¥₩₫₺₪₴₼₾₭฿₦₵₱₸₽]|NT\$|HK\$|S/\.|S/|R\$|RD\$|N\$|KSh|TSh|USh|Rp|TL|Ft)\s*" + num_pat,
         t,
         re.I,
     )
@@ -396,63 +405,32 @@ def extract_amount_number(text: str) -> str:
         return _normalize_number(cand[-1])
     return ""
 
-# ================= Helpers =================
-
-def normalize_for_price_extraction(s: str) -> str:
-    s = _clean(s or "")
-    if not s:
-        return ""
-    s = re.sub(r"\s+", " ", s)
-    s = re.sub(r"(\d)\s*([.,])\s*(\d)", r"\1\2\3", s)
-    s = re.sub(rf"({CURRENCY_TOKEN})\s+(\d)", r"\1\2", s, flags=re.I)
-    s = re.sub(rf"(\d{{1,3}})\s*({CURRENCY_TOKEN})\s*(\d{{3}})\b", r"\2\1 \3", s, flags=re.I)
-    return s
-
-@lru_cache(maxsize=None)
-def normalize_country_name(name):
-    name = COUNTRY_CORRECTIONS.get(name, name)
-    try:
-        return pycountry.countries.lookup(name).name
-    except Exception:
-        try:
-            t = translator.translate(name)
-            t = COUNTRY_CORRECTIONS.get(t, t)
-            return pycountry.countries.lookup(t).name
-        except Exception:
-            return name
-
-@lru_cache(maxsize=None)
-def get_country_code(name):
-    name = MANUAL_COUNTRY_FIXES.get(name, name)
-    try:
-        return pycountry.countries.lookup(name).alpha_2
-    except Exception:
-        try:
-            m = pycountry.countries.search_fuzzy(name)
-            return m[0].alpha_2 if m else ""
-        except Exception:
-            return ""
-
-@lru_cache(maxsize=None)
-def get_country_name_from_code(code):
-    try:
-        obj = pycountry.countries.get(alpha_2=code)
-        if obj:
-            return obj.name
-    except Exception:
-        pass
-    return MANUAL_REGION_METADATA.get(code, {}).get("name", code)
+# ================= Plan name normalization =================
 
 @lru_cache(maxsize=None)
 def standardize_plan(plan_text, idx):
-    s = translate_text_cached(plan_text)
-    if "student" in s:
+    raw = (plan_text or "").strip().lower()
+    if not raw:
+        return TIER_ORDER[idx] if idx < len(TIER_ORDER) else "Individual"
+
+    if "student" in raw:
         return "Student"
-    if "individual" in s or "personal" in s:
-        return "Individual"
-    if "family" in s:
+    if "family" in raw:
         return "Family"
-    return TIER_ORDER[idx] if idx < len(TIER_ORDER) else plan_text
+    if "individual" in raw or "personal" in raw:
+        return "Individual"
+
+    en = translate_text_cached(raw)
+    if "student" in en:
+        return "Student"
+    if "family" in en:
+        return "Family"
+    if "individual" in en or "personal" in en:
+        return "Individual"
+
+    return TIER_ORDER[idx] if idx < len(TIER_ORDER) else "Individual"
+
+# ================= Missing logging =================
 
 def init_missing_db():
     con = sqlite3.connect(MISSING_DB)
@@ -478,118 +456,26 @@ def log_missing(country, code, url, reason):
         {"ts": ts, "country": country, "country_code": code, "url": url, "reason": reason}
     )
 
-# ================= DOM parsing =================
+# ================= Recurring price selection (trial-proof) =================
+# We avoid "penalize trial" because Apple often writes: "$0.49 for 3 months..., then $5.49/month"
+# Both tokens share the same sentence. Instead we:
+#   - Prefer tokens whose nearby translated context contains "then/after/thereafter"
+#   - Else tokens whose nearby translated context looks monthly
+#   - Else MAX numeric token (recurring almost always larger)
 
-PLAN_RE = {
-    "Student": re.compile(
-        r"(?i)\b("
-        r"student|estudiante|estudante|estudantes|étudiant|etudiant|schüler|schueler|"
-        r"universitario|universitaria|universit[aá]rio|universit[aá]ria|"
-        r"студент|학생|sinh\s+viên|pelajar"
-        r")\b|学生|學生"
-    ),
-    "Individual": re.compile(
-        r"(?i)\b("
-        r"individual|personal|personligt|personlig|individuale|individuel|individuell|"
-        r"individuo|perorangan|perseorangan"
-        r")\b|個人|个人|개인"
-    ),
-    "Family": re.compile(
-        r"(?i)\b("
-        r"family|familia|famille|familie|familj|famiglia|fam[íi]lia|familiar|keluarga"
-        r")\b|家族|家庭|가족"
-    ),
-}
+EN_THEN_RE = re.compile(r"(?i)\b(then|after|thereafter|following|from then)\b")
+EN_MONTH_RE = re.compile(r"(?i)(/\s*month\b|\bper\s+month\b|\bmonthly\b|\beach\s+month\b|\ba\s+month\b)")
 
-def _plan_hits(text: str):
-    hits = set()
-    for plan, rx in PLAN_RE.items():
-        if rx.search(text or ""):
-            hits.add(plan)
-    return hits
-
-# Monthly indicator: only true when "per month" (or equivalent) is near the price,
-# not for "3 months for X" trial phrases.
-MONTHLY_POS_RE = re.compile(
-    r"(?i)("
-    r"/\s*(?:month|mois|mes|mese|meses|monat|monate|m[eå]nad|m[eå]ned|bulan|ay|월|月)\b"
-    r"|"
-    r"\bper\s+(?:month|mois|mes|mese|meses|monat|monate|m[eå]nad|m[eå]ned|bulan|ay|월|月)\b"
-    r"|"
-    r"\bpor\s+m[eéê]s\b"
-    r"|"
-    r"\bal\s+m[eéê]s\b"
-    r"|"
-    r"\bmensal\b|\bmensual(?:es)?\b|\bmensuel(?:le|s)?\b|\bmonatlich\b|\bmensile\b"
-    r")"
-)
-
-THEN_POS_RE = re.compile(
-    r"(?i)\b("
-    r"then|thereafter|after|"
-    r"luego|despu[eé]s|a\s+partir\s+de|"
-    r"ensuite|puis|apr[eè]s|"
-    r"danach|"
-    r"之后|以後|その後|以降|"
-    r"이후|다음|"
-    r"depois|ap[oó]s|"
-    r"kemudian|selanjutnya|setelah|lalu|"
-    r"därefter"
-    r")\b"
-)
-
-NUMWORD_RE = (
-    r"(?:\d+|"
-    r"one|two|three|four|five|six|seven|eight|nine|ten|"
-    r"un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|"
-    r"ein|eine|zwei|drei|vier|f(?:u|ü)nf|sechs|sieben|acht|neun|zehn|"
-    r"uno|una|dos|tres|tr[eé]s|cuatro|cinco|seis|siete|ocho|nueve|diez|"
-    r"um|uma|dois|duas|tr[eê]s|tres|quatro|cinco|seis|sete|oito|nove|dez|"
-    r"satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan|sepuluh)"
-)
-
-MONTHWORD_RE = r"(?:months?|mes(?:es)?|mois|monate?|bulan|개월|个月|か月)"
-
-INTRO_NEG_RE = re.compile(
-    rf"(?i)\b("
-    r"try|trial|free|offer|limited|intro|new\s+subscribers?|"
-    rf"(?:for|por|durante|selama)\s+{NUMWORD_RE}\s+{MONTHWORD_RE}|"
-    rf"{NUMWORD_RE}\s+{MONTHWORD_RE}|"
-    r"first\s+month|1st\s+month|"
-    r"bulan\s+pertama|"
-    r"primeiro\s+m[eê]s|primeira\s+m[eê]s|"
-    r"mes\s+gratis|m[eê]s\s+gr[aá]tis|"
-    r"gratis\s+untuk\s+pelanggan\s+baru|pelanggan\s+baru|"
-    r"gratuit|kostenlos|gratis"
-    r")\b"
-)
-
-def pick_best_price_token(text: str):
-    """
-    Pick the best recurring monthly price token from a chunk of text.
-
-    - Prefers tokens near explicit "per month" wording (MONTHLY_POS_RE) in a *local* window.
-    - Uses THEN_POS_RE to prefer tokens appearing after "then/thereafter" phrases.
-    - Uses INTRO_NEG_RE and simple heuristics to avoid obvious intro / trial prices.
-    """
+def pick_recurring_price_token(text: str):
     if not text:
-        return None
+        return None, None, []
 
-    s = normalize_for_price_extraction(text)
-    matches = list(BANNER_PRICE_REGEX.finditer(s))
-    if not matches:
-        return None
+    t = _clean(text)
+    cands = []
 
-    thens = list(THEN_POS_RE.finditer(s))
-    pivot = thens[-1].start() if thens else None
-
-    any_intro = False
-    candidates = []
-    n = len(s)
-
-    for m in matches:
-        tok = m.group(0)
-        num = extract_amount_number(tok)
+    for m in BANNER_PRICE_REGEX.finditer(t):
+        token = m.group(0)
+        num = extract_amount_number(token)
         if not num:
             continue
         try:
@@ -597,268 +483,138 @@ def pick_best_price_token(text: str):
         except Exception:
             continue
 
-        start, end = m.span()
+        a, b = m.span()
+        ctx_raw = t[max(0, a - 60): min(len(t), b + 60)]
+        ctx_en = translate_text_cached(ctx_raw)
 
-        # Local right/left windows for "per month" wording
-        right_ctx = s[end : min(n, end + 40)]
-        left_ctx = s[max(0, start - 40) : start]
+        has_then = bool(EN_THEN_RE.search(ctx_en))
+        has_month = bool(EN_MONTH_RE.search(ctx_en))
 
-        has_month = bool(MONTHLY_POS_RE.search(right_ctx) or MONTHLY_POS_RE.search(left_ctx))
+        cands.append((token, val, has_then, has_month, ctx_en, a))
 
-        # Broader context for intro / "then" detection
-        context = s[max(0, start - 80) : min(n, end + 80)]
-        has_intro = bool(INTRO_NEG_RE.search(context))
-        has_then = bool(THEN_POS_RE.search(context))
-        after_pivot = (pivot is not None and start > pivot)
+    if not cands:
+        return None, None, []
 
-        any_intro = any_intro or has_intro
+    pool = [c for c in cands if c[2]] or [c for c in cands if c[3]] or cands
 
-        # very small numeric tokens are likely footnotes (e.g. "* Footnote 3")
-        if val < 10 and not re.search(r"[.,]\d{1,2}\b", tok):
-            footnote_like = True
-        else:
-            footnote_like = False
+    # pick max value; tie-breaker later in text
+    pool.sort(key=lambda x: (x[1], x[5]), reverse=True)
+    best = pool[0]
 
-        candidates.append(
-            {
-                "token": tok,
-                "value": val,
-                "start": start,
-                "has_month": has_month,
-                "has_intro": has_intro,
-                "has_then": has_then,
-                "after_pivot": after_pivot,
-                "footnote_like": footnote_like,
-            }
-        )
+    debug = [(c[0], c[1], c[2], c[3], c[4]) for c in cands]
+    return best[0], _cast_num(best[1]), debug
 
-    if not candidates:
-        return None
-
-    monthly = [c for c in candidates if c["has_month"]]
-    if monthly:
-        def score(c):
-            sc = 10
-            if c["after_pivot"]:
-                sc += 4
-            if c["has_then"]:
-                sc += 2
-            if c["has_intro"]:
-                sc -= 7
-            if c["footnote_like"]:
-                sc -= 10
-            if c["value"] < 1:
-                sc -= 12
-            return (sc, c["value"])
-
-        best = max(monthly, key=score)
-
-        # If we have a pivot ("then/thereafter"), prefer prices after that pivot
-        if pivot is not None and not best["after_pivot"]:
-            later = [c for c in monthly if c["after_pivot"]]
-            if later:
-                best2 = max(later, key=score)
-                if best2["value"] >= best["value"] or score(best2)[0] >= score(best)[0]:
-                    best = best2
-
-        return best["token"], best["value"]
-
-    if pivot is not None:
-        after = [c for c in candidates if c["start"] > pivot]
-        if after:
-            def k(c):
-                return ((0 if not c["has_intro"] else -1), c["value"])
-            best = max(after, key=k)
-            return best["token"], best["value"]
-
-    # If *everything* looks like intro/trial and we have no pivot/monthly hint,
-    # bail out so that the caller can fall back to another source (e.g. banner).
-    if any_intro:
-        return None
-
-    # Last resort: biggest numeric value in the text
-    best = max(candidates, key=lambda c: c["value"])
-    return best["token"], best["value"]
+# ================= DOM parsing =================
 
 def candidate_price_nodes(card: Tag):
-    nodes = list(card.select(
-        "p.plan-type.cost, p.tile-headline, "
-        "[class*=cost], [class*=price], [class*=headline], [class*=subhead]"
-    ))
+    nodes = list(
+        card.select(
+            "p.plan-type.cost, p.tile-headline, "
+            "[class*=cost], [class*=price], [class*=headline], [class*=subhead]"
+        )
+    )
     for el in card.find_all(True):
         txt = (el.get("aria-label") or el.get_text(" ", strip=True) or "")
-        if txt and re.search(rf"{CURRENCY_CHARS}|RMB|CN¥|Rp|SAR|QAR|AED|KWD|BHD|OMR|RM|HK\$|NT\$|US\$", txt):
+        if txt and re.search(
+            rf"{CURRENCY_CHARS}|Rp|\bTL\b|\bFt\b|Kč|zł|\blei\b|лв|грн|"
+            r"SAR|QAR|AED|KWD|BHD|OMR|RM|HK\$|NT\$|US\$",
+            txt,
+            re.I,
+        ):
             nodes.append(el)
     seen, out = set(), []
     for n in nodes:
         if id(n) not in seen:
-            seen.add(id(n)); out.append(n)
+            seen.add(id(n))
+            out.append(n)
     return out
 
-def _get_plans_container(soup: BeautifulSoup) -> Tag:
+def find_plan_cards(soup: BeautifulSoup):
     section = (
         soup.find("section", attrs={"data-analytics-name": re.compile("plans", re.I)})
-        or soup.find("section", class_=re.compile("section-plans|plans|pricing", re.I))
+        or soup.find("section", class_=re.compile("plans|pricing|subscriptions", re.I))
+        or soup
     )
-    if section:
-        return section
 
-    best = None
-    best_len = None
-    candidates = list(soup.find_all("section"))
-    if not candidates:
-        candidates = list(soup.find_all("div"))
+    cards = section.select(
+        "div.plan-list-item, "
+        "li.gallery-item, "
+        "li[role='listitem'], "
+        "div[class*='plan'], "
+        "div[class*='pricing'], "
+        "div[class*='tile'], "
+        "article[class*='plan'], "
+        "[data-analytics-name*='student'], "
+        "[data-analytics-name*='individual'], "
+        "[data-analytics-name*='family'], "
+        "#student, #individual, #family"
+    )
 
-    for node in candidates:
-        txt = " ".join(node.stripped_strings)
-        if not txt:
-            continue
-        hits = _plan_hits(txt)
-        if len(hits) < 1:  # at least one plan keyword
-            continue
-        if not BANNER_PRICE_REGEX.search(txt):
-            continue
-        L = len(txt)
-        if best is None or (best_len is None) or L < best_len:
-            best = node
-            best_len = L
-    return best or soup
+    if not cards or len(cards) < 2:
+        cards = soup.select("#student, #individual, #family") or cards
 
-def extract_plan_entries_semantic(section: Tag, alpha2: str):
+    return section, cards
+
+def classify_plan_card(card: Tag, idx: int):
+    cid = (card.get("id") or "").lower()
+    if cid in {"student", "individual", "family"}:
+        return cid.capitalize()
+
+    dan = (card.get("data-analytics-name") or "").lower()
+    if "student" in dan:
+        return "Student"
+    if "individual" in dan or "personal" in dan:
+        return "Individual"
+    if "family" in dan:
+        return "Family"
+
+    head = card.select_one("h1,h2,h3,h4,p,span")
+    if head:
+        return standardize_plan(head.get_text(" ", strip=True), idx)
+
+    return TIER_ORDER[idx] if idx < len(TIER_ORDER) else "Individual"
+
+def extract_plan_entries_from_dom_apple(soup: BeautifulSoup, alpha2: str):
+    _, cards = find_plan_cards(soup)
+    if not cards:
+        return {}
+
     entries = {}
-    if not section:
-        return entries
+    for idx, card in enumerate(cards):
+        std = classify_plan_card(card, idx)
 
-    candidates = []
-    for el in section.find_all(["h1","h2","h3","h4","p","span","div","li","strong","a"]):
-        txt = _clean(el.get_text(" ", strip=True))
-        if not txt or len(txt) > 160:
-            continue
-        for plan, rx in PLAN_RE.items():
-            if rx.search(txt):
-                candidates.append((plan, el))
-                break
+        headline_bits = []
+        for el in candidate_price_nodes(card):
+            raw = (el.get("aria-label") or el.get_text(" ", strip=True) or "")
+            if raw:
+                headline_bits.append(raw)
 
-    def ancestor_blocks(el: Tag, max_up=9):
-        cur = el
-        for _ in range(max_up):
-            if not cur or not isinstance(cur, Tag):
-                break
-            yield cur
-            cur = cur.parent if hasattr(cur, "parent") else None
+        headline_text = " ".join(headline_bits)
+        full_text = " ".join(card.stripped_strings)
 
-    for plan, el in candidates:
-        best = None
-        for block in ancestor_blocks(el, max_up=10):
-            block_text = " ".join(block.stripped_strings)
-            if not block_text:
-                continue
-
-            hits = _plan_hits(block_text)
-            if plan not in hits:
-                continue
-            if len(hits - {plan}) > 0:
-                continue
-
-            token_val = pick_best_price_token(block_text)
-            if token_val:
-                best = (block_text, token_val)
-                break
-
-        if not best:
+        chosen_tok, chosen_val, _dbg = pick_recurring_price_token(headline_text)
+        if not chosen_tok:
+            chosen_tok, chosen_val, _dbg = pick_recurring_price_token(full_text)
+        if not chosen_tok:
             continue
 
-        ctx_text, (tok, val) = best
-        iso, src, raw_cur = detect_currency_from_display(tok, alpha2)
+        iso, src, raw_cur = detect_currency_from_display(chosen_tok, alpha2)
+
         if src in {"ambiguous_symbol->default", "territory_default"}:
-            iso2, src2 = detect_currency_in_text(ctx_text, alpha2)
+            iso2, src2 = detect_currency_in_text(full_text, alpha2)
             if src2 in {"symbol", "code"} and iso2:
-                iso, src = iso2, f"context-{src2}"
-            iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, val, alpha2, ctx_text)
+                iso, src, raw_cur = iso2, f"context-{src2}", raw_cur
+            iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, chosen_val, alpha2, full_text)
             if why:
                 iso, src = iso_res, f"heuristic-{why}"
 
-        if plan not in entries:
-            entries[plan] = {
-                "Currency": iso,
-                "Currency Source": src,
-                "Currency Raw": raw_cur,
-                "Price Display": _clean(tok),
-                "Price Value": val,
-            }
-
-    return entries
-
-def extract_plan_entries_from_dom_apple(soup: BeautifulSoup, alpha2: str):
-    section = _get_plans_container(soup)
-    entries = extract_plan_entries_semantic(section, alpha2)
-
-    if len(entries) < 3:
-        cards = section.select(
-            "div.plan-list-item, li.gallery-item, li[role='listitem'], article, "
-            "div[class*='plan-tile'], div[class*='pricing-card'], div[class*='pricing-column'], "
-            "div[class*='plan-card'], div[class*='tile']"
-        )
-
-        def classify(card: Tag, idx: int) -> str:
-            cid = (card.get("id") or "").lower()
-            if cid in {"student", "individual", "family"}:
-                return cid.capitalize()
-            low = {c.lower() for c in (card.get("class") or [])}
-            if "student" in low:
-                return "Student"
-            if "individual" in low or "personal" in low:
-                return "Individual"
-            if "family" in low:
-                return "Family"
-            head = card.select_one("h1, h2, h3, h4, p, span")
-            if head:
-                ht = head.get_text(" ", strip=True)
-                for p, rx in PLAN_RE.items():
-                    if rx.search(ht):
-                        return p
-                return standardize_plan(ht, idx)
-            return TIER_ORDER[idx] if idx < len(TIER_ORDER) else "Individual"
-
-        for idx, card in enumerate(cards):
-            full_text = " ".join(card.stripped_strings)
-            if not full_text:
-                continue
-            hits = _plan_hits(full_text)
-            if len(hits) > 1:
-                continue
-
-            std = classify(card, idx)
-            if std in entries:
-                continue
-
-            token_val = pick_best_price_token(full_text)
-            if not token_val:
-                for el in candidate_price_nodes(card):
-                    raw = (el.get("aria-label") or el.get_text(" ", strip=True) or "")
-                    token_val = pick_best_price_token(raw)
-                    if token_val:
-                        break
-
-            if not token_val:
-                continue
-
-            chosen_tok, chosen_val = token_val
-            iso, src, raw_cur = detect_currency_from_display(chosen_tok, alpha2)
-            if src in {"ambiguous_symbol->default", "territory_default"}:
-                iso2, src2 = detect_currency_in_text(full_text, alpha2)
-                if src2 in {"symbol", "code"} and iso2:
-                    iso, src = iso2, f"context-{src2}"
-                iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, chosen_val, alpha2, full_text)
-                if why:
-                    iso, src = iso_res, f"heuristic-{why}"
-
+        if std not in entries:
             entries[std] = {
                 "Currency": iso,
                 "Currency Source": src,
                 "Currency Raw": raw_cur,
                 "Price Display": _clean(chosen_tok),
-                "Price Value": chosen_val,
+                "Price Value": _cast_num(float(chosen_val)),
             }
 
     return entries
@@ -867,38 +623,37 @@ def extract_plan_entries_from_dom_generic(soup: BeautifulSoup, alpha2: str):
     entries = {}
     plan_lists = soup.find_all(attrs={"class": re.compile(r"(plan|tier|pricing)", re.I)}) or [soup]
     for container in plan_lists:
-        cards = container.find_all(True, class_=re.compile(r"(plan|tier|card|pricing)", re.I)) or [container]
+        cards = container.find_all(True, class_=re.compile(r"(plan|tier|card|tile)", re.I)) or [container]
         for idx, card in enumerate(cards):
-            raw_text = " ".join(card.stripped_strings)
-            if not raw_text:
-                continue
-            hits = _plan_hits(raw_text)
-            if len(hits) > 1:
-                continue
-
-            lab = (card.find("p", class_=re.compile("plan-type|name", re.I))
-                   or card.find(re.compile("h[1-6]")) or card)
-            plan_name = _clean(lab.get_text()) if lab else f"Plan {idx+1}"
+            lab = (
+                card.find("p", class_=re.compile("plan-type|name", re.I))
+                or card.find(re.compile("h[1-4]"))
+                or card
+            )
+            plan_name = _clean(lab.get_text(" ", strip=True)) if lab else f"Plan {idx+1}"
             std = standardize_plan(plan_name, idx)
 
-            token_val = pick_best_price_token(raw_text)
-            if not token_val:
-                for el in candidate_price_nodes(card):
-                    txt = (el.get("aria-label") or el.get_text(" ", strip=True) or "")
-                    token_val = pick_best_price_token(txt)
-                    if token_val:
-                        break
+            headline_bits = []
+            for el in candidate_price_nodes(card):
+                raw = (el.get("aria-label") or el.get_text(" ", strip=True) or "")
+                if raw:
+                    headline_bits.append(raw)
 
-            if not token_val:
+            headline_text = " ".join(headline_bits)
+            full_text = " ".join(card.stripped_strings)
+
+            chosen_tok, chosen_val, _dbg = pick_recurring_price_token(headline_text)
+            if not chosen_tok:
+                chosen_tok, chosen_val, _dbg = pick_recurring_price_token(full_text)
+            if not chosen_tok:
                 continue
 
-            tok, val = token_val
-            iso, src, raw_cur = detect_currency_from_display(tok, alpha2)
+            iso, src, raw_cur = detect_currency_from_display(chosen_tok, alpha2)
             if src in {"ambiguous_symbol->default", "territory_default"}:
-                iso2, src2 = detect_currency_in_text(raw_text, alpha2)
+                iso2, src2 = detect_currency_in_text(full_text, alpha2)
                 if src2 in {"symbol", "code"} and iso2:
-                    iso, src = iso2, f"context-{src2}"
-                iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, val, alpha2, raw_text)
+                    iso, src, raw_cur = iso2, f"context-{src2}", raw_cur
+                iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, chosen_val, alpha2, full_text)
                 if why:
                     iso, src = iso_res, f"heuristic-{why}"
 
@@ -908,8 +663,8 @@ def extract_plan_entries_from_dom_generic(soup: BeautifulSoup, alpha2: str):
                     "Currency": iso,
                     "Currency Source": src,
                     "Currency Raw": raw_cur,
-                    "Price Display": _clean(tok),
-                    "Price Value": val,
+                    "Price Display": _clean(chosen_tok),
+                    "Price Value": _cast_num(float(chosen_val)),
                 },
             )
     return entries
@@ -924,7 +679,7 @@ def extract_plan_entries_from_dom(soup: BeautifulSoup, alpha2: str):
 
 APPLE_HOST_RE = r"apple\.com(?:\.cn)?"
 CC_URL_RE = re.compile(rf"{APPLE_HOST_RE}/([a-z]{{2}})(?:/|-[a-z]{{2}}(?:-[a-z]{{2}})?/)", re.I)
-MUSIC_CC_URL_RE = re.compile(r"music\.apple\.com/([a-z]{{2}})/", re.I)
+MUSIC_CC_URL_RE = re.compile(r"music\.apple\.com/([a-z]{2})/", re.I)
 
 def _extract_cc(url):
     if not url:
@@ -949,6 +704,7 @@ async def _get_music_banner_text_async(country_code: str):
                 resp = await page.goto(url, wait_until="domcontentloaded", timeout=20000)
                 await page.wait_for_load_state("networkidle", timeout=10000)
                 last = page.url or (resp.url if resp else url)
+
                 sels = [
                     "cwc-music-upsell-banner-web [data-test='subheader-text']",
                     "[data-test='subheader-text']",
@@ -964,6 +720,7 @@ async def _get_music_banner_text_async(country_code: str):
                             return t, last
                     except PWTimeoutError:
                         continue
+
                 t = await page.evaluate("document.body && document.body.innerText || ''")
                 if t and (BANNER_PRICE_REGEX.search(t) or STRICT_PRICE_NUMBER.search(t)):
                     await browser.close()
@@ -972,52 +729,6 @@ async def _get_music_banner_text_async(country_code: str):
                 continue
         await browser.close()
         return "", last
-
-def _extract_price_from_banner_text(text: str):
-    if not text:
-        return "", "", None
-    tok_val = pick_best_price_token(text)
-    if not tok_val:
-        return "", "", None
-    tok, val = tok_val
-    return "", _clean(tok), val
-
-def fetch_banner_individual_price(alpha2: str):
-    with BANNER_SEMAPHORE:
-        try:
-            text, final_url = asyncio.run(_get_music_banner_text_async(alpha2))
-        except RuntimeError:
-            holder = {}
-            def runner():
-                holder["pair"] = asyncio.run(_get_music_banner_text_async(alpha2))
-            t = threading.Thread(target=runner, daemon=True)
-            t.start(); t.join()
-            text, final_url = holder.get("pair", ("", ""))
-
-    store_cc = _extract_cc(final_url)
-    if not store_cc or store_cc != alpha2.upper():
-        return None
-
-    _, disp, val = _extract_price_from_banner_text(text)
-    if val is None:
-        return None
-
-    iso, src, raw_cur = detect_currency_from_display(disp, alpha2)
-    if src in {"ambiguous_symbol->default", "territory_default"}:
-        iso2, src2 = detect_currency_in_text(text, alpha2)
-        if iso2 and src2 in {"symbol", "code"}:
-            iso, src = iso2, f"context-{src2}"
-        iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, val, alpha2, text)
-        if why:
-            iso, src = iso_res, f"heuristic-{why}"
-
-    return {
-        "Currency": iso,
-        "Currency Source": src,
-        "Currency Raw": raw_cur or "",
-        "Price Display": _clean(disp),
-        "Price Value": val,
-    }
 
 def banner_individual_row(alpha2: str, country_name: str, meta=None):
     with BANNER_SEMAPHORE:
@@ -1042,12 +753,15 @@ def banner_individual_row(alpha2: str, country_name: str, meta=None):
         )
         return []
 
-    cur_sym, disp, val = _extract_price_from_banner_text(text)
-    if val is None:
+    chosen_tok, chosen_val, _dbg = pick_recurring_price_token(text)
+    if not chosen_tok or chosen_val is None:
         return []
 
-    iso, src, raw = detect_currency_from_display(disp or cur_sym, alpha2)
-    raw = raw or cur_sym or ""
+    disp = _clean(chosen_tok)
+    val = _cast_num(float(chosen_val))
+
+    iso, src, raw = detect_currency_from_display(disp, alpha2)
+    raw = raw or ""
 
     if src in {"ambiguous_symbol->default", "territory_default"}:
         iso2, src2 = detect_currency_in_text(text, alpha2)
@@ -1114,10 +828,50 @@ def _storefront_equivalent(requested_cc: str, detected_cc: str) -> bool:
         return True
     return False
 
+# ================= Country helpers =================
+
+@lru_cache(maxsize=None)
+def normalize_country_name(name):
+    name = COUNTRY_CORRECTIONS.get(name, name)
+    try:
+        return pycountry.countries.lookup(name).name
+    except Exception:
+        try:
+            t = translator.translate(name)
+            t = COUNTRY_CORRECTIONS.get(t, t)
+            return pycountry.countries.lookup(t).name
+        except Exception:
+            return name
+
+@lru_cache(maxsize=None)
+def get_country_code(name):
+    name = MANUAL_COUNTRY_FIXES.get(name, name)
+    try:
+        return pycountry.countries.lookup(name).alpha_2
+    except Exception:
+        try:
+            m = pycountry.countries.search_fuzzy(name)
+            return m[0].alpha_2 if m else ""
+        except Exception:
+            return ""
+
+@lru_cache(maxsize=None)
+def get_country_name_from_code(code):
+    try:
+        obj = pycountry.countries.get(alpha_2=code)
+        if obj:
+            return obj.name
+    except Exception:
+        pass
+    return MANUAL_REGION_METADATA.get(code, {}).get("name", code)
+
 # ================= Main scrape =================
 
 def scrape_country(alpha2: str):
-    cc = alpha2.upper()
+    cc = (alpha2 or "").upper()
+    if not cc or len(cc) != 2:
+        return []
+
     base = APPLE_BASE_BY_CC.get(cc, "https://www.apple.com")
     paths = REGION_LOCALE_PATHS.get(cc, [cc.lower()])
 
@@ -1134,9 +888,10 @@ def scrape_country(alpha2: str):
                 had_apple_page = True
 
             if cc != "US" and looks_like_us_hub_url(resp.url):
-                cn = get_country_name_from_code(cc)
+                cn = normalize_country_name(get_country_name_from_code(cc))
                 return banner_individual_row(
-                    cc, cn,
+                    cc,
+                    cn,
                     meta={
                         "Redirected": True,
                         "Redirected To": "US hub",
@@ -1147,10 +902,11 @@ def scrape_country(alpha2: str):
                 )
 
             final_cc = _extract_cc(resp.url)
-            if final_cc and not _storefront_equivalent(cc, final_cc):
-                cn = get_country_name_from_code(cc)
+            if final_cc and not _storefront_equivalent(cc, final_cc) and not resp.url.startswith(APPLE_BASE_BY_CC.get(cc, "")):
+                cn = normalize_country_name(get_country_name_from_code(cc))
                 return banner_individual_row(
-                    cc, cn,
+                    cc,
+                    cn,
                     meta={
                         "Redirected": True,
                         "Redirected To": final_cc,
@@ -1166,9 +922,10 @@ def scrape_country(alpha2: str):
             soup = BeautifulSoup(resp.text, "html.parser")
 
             if cc != "US" and looks_like_us_hub_html(soup):
-                cn = get_country_name_from_code(cc)
+                cn = normalize_country_name(get_country_name_from_code(cc))
                 return banner_individual_row(
-                    cc, cn,
+                    cc,
+                    cn,
                     meta={
                         "Redirected": True,
                         "Redirected To": "US hub",
@@ -1178,21 +935,16 @@ def scrape_country(alpha2: str):
                     },
                 )
 
-            country_name = get_country_name_from_code(cc)
+            country_name = normalize_country_name(get_country_name_from_code(cc))
             country_name = MANUAL_COUNTRY_FIXES.get(country_name, country_name)
-            code = cc  # trust ISO alpha-2 instead of round-tripping via translation
+            code = (get_country_code(country_name) or cc).upper()
 
             entries = extract_plan_entries_from_dom(soup, code)
 
-            # fill missing Individual from music banner (e.g., BR promo tile)
-            if "Individual" not in entries:
-                banner = fetch_banner_individual_price(code)
-                if banner:
-                    entries["Individual"] = banner
-
             if cc != "US" and not entries and looks_like_us_content(soup):
                 return banner_individual_row(
-                    code, country_name,
+                    code,
+                    country_name,
                     meta={
                         "Redirected": True,
                         "Redirected To": "US hub",
@@ -1227,9 +979,9 @@ def scrape_country(alpha2: str):
             if rows:
                 return rows
 
-            # nothing found on apple.com page → fall back to banner as Individual only
             return banner_individual_row(
-                code, country_name,
+                code,
+                country_name,
                 meta={
                     "Redirected": False,
                     "Redirected To": "",
@@ -1242,9 +994,10 @@ def scrape_country(alpha2: str):
         except Exception:
             continue
 
-    cn = get_country_name_from_code(cc)
+    cn = normalize_country_name(get_country_name_from_code(cc))
     return banner_individual_row(
-        cc, cn,
+        cc,
+        cn,
         meta={
             "Redirected": False,
             "Redirected To": "",
@@ -1263,11 +1016,7 @@ def run_scraper(country_codes_override=None):
     all_codes = sorted(iso_codes.union(EXTRA_REGIONS))
 
     if country_codes_override:
-        requested = {
-            (cc or "").strip().upper()
-            for cc in country_codes_override
-            if (cc or "").strip()
-        }
+        requested = {(cc or "").strip().upper() for cc in country_codes_override if (cc or "").strip()}
         requested = {cc for cc in requested if len(cc) == 2}
         all_codes = sorted(requested)
         print(f"🎯 Subset mode: scraping {len(all_codes)} countries: {all_codes}")
@@ -1294,7 +1043,7 @@ def run_scraper(country_codes_override=None):
                     all_rows.extend(res)
             except Exception as e:
                 failed_codes.append(cc)
-                cn = get_country_name_from_code(cc)
+                cn = normalize_country_name(get_country_name_from_code(cc))
                 log_missing(
                     cn,
                     cc,
@@ -1309,10 +1058,9 @@ def run_scraper(country_codes_override=None):
                 res = scrape_country(cc)
                 if res:
                     all_rows.extend(res)
-                    # drop entries we incorrectly logged for this cc
                     MISSING_BUFFER[:] = [m for m in MISSING_BUFFER if m.get("country_code") != cc]
             except Exception as e:
-                cn = get_country_name_from_code(cc)
+                cn = normalize_country_name(get_country_name_from_code(cc))
                 log_missing(
                     cn,
                     cc,
@@ -1328,18 +1076,7 @@ def run_scraper(country_codes_override=None):
     df["Plan"] = pd.Categorical(df["Plan"], TIER_ORDER, ordered=True)
     df.sort_values(["Country", "Plan"], inplace=True, ignore_index=True)
 
-    cols = [
-        "Country",
-        "Country Code",
-        "Currency",
-        "Currency Raw",
-        "Plan",
-        "Price Display",
-        "Price Value",
-    ]
-    df = df[cols]
-
-    out_name = "apple_music_plans_TEST.xlsx" if TEST_MODE else "apple_music_plans_all.xlsx"
+    out_name = "apple_music_plans_TEST.xlsx" if TEST_MODE or country_codes_override else "apple_music_plans_all.xlsx"
     df.to_excel(out_name, index=False)
     print(f"✅ Exported to {out_name} (rows={len(df)})")
 
@@ -1349,10 +1086,8 @@ def run_scraper(country_codes_override=None):
 
     return out_name
 
-
 def run_apple_music_scraper(test_mode: bool = True, test_countries=None) -> str:
     global TEST_MODE, TEST_COUNTRIES
-
     TEST_MODE = bool(test_mode)
 
     if TEST_MODE and test_countries:
@@ -1360,7 +1095,12 @@ def run_apple_music_scraper(test_mode: bool = True, test_countries=None) -> str:
         print(f"[APPLE MUSIC] UI-driven test countries: {TEST_COUNTRIES}")
 
     start = time.time()
-    out = run_scraper()
+    run_scraper()
     print(f"[APPLE MUSIC] Finished in {round(time.time() - start, 2)}s")
 
-    return out or ("apple_music_plans_TEST.xlsx" if TEST_MODE else "apple_music_plans_all.xlsx")
+    return "apple_music_plans_TEST.xlsx" if TEST_MODE else "apple_music_plans_all.xlsx"
+
+if __name__ == "__main__":
+    start = time.time()
+    run_scraper()
+    print(f"⏱️ Finished in {round(time.time() - start, 2)}s")
