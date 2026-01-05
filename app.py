@@ -456,6 +456,8 @@ def dsp_panel(dsp_name: str, logo_filename: Optional[str], description: str):
 
     # --- run button ---
     if st.button(f" Run {dsp_name} scraper", key=f"run_{dsp_name}"):
+        # Clear any previous result so stale data isn't shown if the run fails
+        results_dict[dsp_name] = None
         excel_path = run_with_progress(
             dsp_name=dsp_name,
             test_mode=test_mode,
