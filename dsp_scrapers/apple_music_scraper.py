@@ -1090,15 +1090,20 @@ def run_apple_music_scraper(test_mode: bool = True, test_countries=None) -> str:
     global TEST_MODE, TEST_COUNTRIES
     TEST_MODE = bool(test_mode)
 
+    country_override = None
     if TEST_MODE and test_countries:
         TEST_COUNTRIES = [c.strip().upper() for c in test_countries if c and len(c.strip()) == 2]
+        country_override = TEST_COUNTRIES
         print(f"[APPLE MUSIC] UI-driven test countries: {TEST_COUNTRIES}")
 
     start = time.time()
-    run_scraper()
+    output_path = run_scraper(country_codes_override=country_override)
     print(f"[APPLE MUSIC] Finished in {round(time.time() - start, 2)}s")
 
-    return "apple_music_plans_TEST.xlsx" if TEST_MODE else "apple_music_plans_all.xlsx"
+    if not output_path:
+        raise RuntimeError("Apple Music scrape returned no rows.")
+
+    return output_path
 
 if __name__ == "__main__":
     start = time.time()
