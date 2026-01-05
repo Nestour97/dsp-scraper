@@ -10,6 +10,11 @@
 #   * Prevents "all plans get same price" by strictly isolating each plan tile/container
 #   * Adds Indonesian/Portuguese "then/intro" language support (kemudian/selama, três meses, etc.)
 #   * If Individual is missing/promo-only, fills it from music.apple.com recurring banner price
+# - Fixes (Jan 2026):
+#   * Adds TL/TRY detection so Turkey gets correct TRY prices
+#   * Stops country-code mis-detection (TR becoming AT)
+#   * Adds FAQ-based price parser ("How much does Apple Music cost?")
+#     to override promo prices (fixes Brazil duplicate/intro prices)
 # ------------------------------------------------------------
 
 import re, time, threading, sqlite3, asyncio
@@ -87,9 +92,10 @@ MISSING_BUFFER = []
 # includes fullwidth yen ￥, adds RMB/CN¥ support
 CURRENCY_CHARS = r"[$€£¥￥₩₫₱₹₪₭₮₦₲₴₡₵₺₼₸៛₨₥₾฿]"
 
+# --- UPDATED: added TL / TRY / ₺ ---
 CURRENCY_TOKEN = (
-    r"(RMB|CN¥|US\$|CA\$|AU\$|HK\$|NT\$|MOP\$|NZ\$|RM|S/\.|R\$|CHF|Rp|kr|"
-    r"\$|€|£|¥|￥|₩|₫|₱|₹|₪|₭|₮|₦|₲|₴|₸|TSh|KSh|USh|ZAR|ZWL|R|"
+    r"(RMB|CN¥|US\$|CA\$|AU\$|HK\$|NT\$|MOP\$|NZ\$|RM|S/\.|R\$|CHF|Rp|kr|TL|TRY|"
+    r"\$|€|£|¥|￥|₩|₫|₱|₹|₪|₭|₮|₦|₲|₴|₡|₵|₺|₸|TSh|KSh|USh|ZAR|ZWL|R|"
     r"SAR|QAR|AED|KWD|BHD|OMR)"
 )
 
@@ -183,9 +189,11 @@ HARDCODE_FALLBACKS = {
 }
 KNOWN_ISO = set(HARDCODE_FALLBACKS.values())
 
+# --- UPDATED: TL/TRY strong token ---
 STRONG_TOKENS = [
     (r"(?i)\bRMB\b", "CNY"),
     (r"CN¥", "CNY"),
+    (r"(?i)\bTL\b", "TRY"),
     (r"(?i)US\$", "USD"), (r"(?i)\$US", "USD"), (r"(?i)U\$S", "USD"),
     (r"(?i)\bA\$", "AUD"), (r"(?i)\bNZ\$", "NZD"), (r"(?i)\bHK\$", "HKD"),
     (r"(?i)\bNT\$", "TWD"), (r"(?i)\bS\$", "SGD"), (r"(?i)\bRD\$", "DOP"),
@@ -749,8 +757,8 @@ def extract_plan_entries_semantic(section: Tag, alpha2: str):
 
     return entries
 
-def extract_plan_entries_from_dom_apple(soup: BeautifulSoup, alpha2: str):
-    section = _get_plans_container(soup)
+def extract_plan_entries_from_dom_apple(section_soup: BeautifulSoup, alpha2: str):
+    section = _get_plans_container(section_soup)
     entries = extract_plan_entries_semantic(section, alpha2)
 
     if len(entries) < 3:
@@ -874,11 +882,141 @@ def extract_plan_entries_from_dom_generic(soup: BeautifulSoup, alpha2: str):
             )
     return entries
 
+# --------- NEW: FAQ-based recurring price extraction ----------
+
+def _find_cost_faq_answer_text(soup: BeautifulSoup) -> str:
+    """
+    Locate the 'How much does Apple Music cost?' FAQ (in any language)
+    and return the text of its answer as a single string.
+    """
+    for heading in soup.find_all(["h2", "h3", "h4"]):
+        q = _clean(heading.get_text(" ", strip=True))
+        if not q:
+            continue
+
+        trans_q = translate_text_cached(q)
+        tq = trans_q.lower()
+
+        # Only keep "how much" type questions
+        if "how much" not in tq:
+            continue
+
+        # Collect siblings as the answer until the next heading
+        chunks = []
+        for sib in heading.next_siblings:
+            if isinstance(sib, Tag):
+                if sib.name in ("h2", "h3", "h4"):
+                    break
+                chunks.append(" ".join(sib.stripped_strings))
+        answer = " ".join(chunks).strip()
+        if not answer:
+            continue
+
+        combo = (q + " " + answer).lower()
+        if "apple music" not in combo:
+            trans_a = translate_text_cached(answer)
+            if "apple music" not in (trans_q + " " + trans_a).lower():
+                continue
+
+        return answer
+
+    return ""
+
+def extract_plan_entries_from_faq_cost(soup: BeautifulSoup, alpha2: str):
+    """
+    Use the 'How much does Apple Music cost?' FAQ answer to get the
+    canonical recurring prices for Student / Individual / Family.
+
+    Works especially well for promo-heavy pages (e.g. Brazil, Turkey).
+    """
+    answer_text = _find_cost_faq_answer_text(soup)
+    if not answer_text:
+        return {}
+
+    translated = translate_text_cached(answer_text)
+    if "student" not in translated:
+        return {}
+
+    s = normalize_for_price_extraction(answer_text)
+    matches = list(BANNER_PRICE_REGEX.finditer(s))
+    if not matches:
+        return {}
+
+    tokens = []
+    seen_vals = set()
+
+    for m in matches:
+        tok = m.group(0)
+        num = extract_amount_number(tok)
+        if not num:
+            continue
+        try:
+            val = float(num)
+        except Exception:
+            continue
+
+        key = round(val, 4)
+        if key in seen_vals:
+            continue
+        seen_vals.add(key)
+        tokens.append((tok, val))
+
+        if len(tokens) >= 3:
+            break
+
+    if len(tokens) < 3:
+        return {}
+
+    entries = {}
+    for idx, std in enumerate(TIER_ORDER):
+        tok, val = tokens[idx]
+
+        iso, src, raw_cur = detect_currency_from_display(tok, alpha2)
+        if src in {"ambiguous_symbol->default", "territory_default"}:
+            iso2, src2 = detect_currency_in_text(answer_text, alpha2)
+            if iso2 and src2 in {"symbol", "code"}:
+                iso, src = iso2, f"context-{src2}"
+            iso_res, why = resolve_dollar_ambiguity(iso, raw_cur, val, alpha2, answer_text)
+            if why:
+                iso, src = iso_res, f"heuristic-{why}"
+
+        entries[std] = {
+            "Currency": iso,
+            "Currency Source": src,
+            "Currency Raw": raw_cur,
+            "Price Display": _clean(tok),
+            "Price Value": val,
+        }
+
+    return entries
+
+# --------- UPDATED main DOM extraction to incorporate FAQ -----
+
+
 def extract_plan_entries_from_dom(soup: BeautifulSoup, alpha2: str):
-    entries = extract_plan_entries_from_dom_apple(soup, alpha2)
+    """
+    1) Try Apple-specific DOM logic (tiles/cards).
+    2) Overlay canonical prices from the 'How much does Apple Music cost?'
+       FAQ answer (if present) – this fixes promo pages like BR/TR.
+    3) If still empty, fall back to the generic pricing parser plus FAQ.
+    """
+    entries = extract_plan_entries_from_dom_apple(soup, alpha2) or {}
+
+    # FAQ prices override tiles when present
+    faq_entries = extract_plan_entries_from_faq_cost(soup, alpha2)
+    if faq_entries:
+        entries.update(faq_entries)
+
     if entries:
         return entries
-    return extract_plan_entries_from_dom_generic(soup, alpha2)
+
+    # Apple-specific heuristics failed; try generic
+    entries = extract_plan_entries_from_dom_generic(soup, alpha2) or {}
+    if faq_entries:
+        for plan, info in faq_entries.items():
+            entries.setdefault(plan, info)
+
+    return entries
 
 # ================= Banner fallback =================
 
@@ -1140,7 +1278,9 @@ def scrape_country(alpha2: str):
 
             country_name = normalize_country_name(get_country_name_from_code(cc))
             country_name = MANUAL_COUNTRY_FIXES.get(country_name, country_name)
-            code = (get_country_code(country_name) or cc).upper()
+
+            # --- UPDATED: keep the original alpha2 as truth; don't recompute from name ---
+            code = cc.upper()
 
             entries = extract_plan_entries_from_dom(soup, code)
 
