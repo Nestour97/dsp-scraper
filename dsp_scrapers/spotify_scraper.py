@@ -5,7 +5,6 @@ import pandas as pd
 from playwright.async_api import async_playwright
 import pycountry
 from difflib import get_close_matches
-from googletrans import Translator
 from tqdm.auto import tqdm
 from datetime import date
 from babel.numbers import get_territory_currencies
@@ -24,7 +23,6 @@ STANDARD_PLAN_NAMES = [
     "Standard",
 ]
 
-translator = Translator()
 MAX_CONCURRENCY = 3
 HEADLESS = True
 
@@ -32,67 +30,24 @@ HEADLESS = True
 TEST_MODE = False
 TEST_MARKETS = ["kr"]
 
-# ---------- Utilities ----------
-def log(msg):
-    print(msg, flush=True)
+# ---------- Translator (optional but helpful) ----------
+# You already used googletrans; keep it.
+from googletrans import Translator
+translator = Translator()
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=2048)
 def translate_text_cached(text: str) -> str:
     try:
         return translator.translate(text or "", dest="en").text.lower()
     except Exception:
         return (text or "").lower()
 
+# ---------- Utilities ----------
+def log(msg):
+    print(msg, flush=True)
+
 def _clean_spaces(s: str) -> str:
     return (s or "").replace("\xa0", " ").strip()
-
-def normalize_plan_name(name: str) -> str:
-    raw = (name or "").strip().lower()
-
-    # Manual overrides
-    if re.search(r"\b(personal|personnel|staff)\b", raw):
-        return "Individual"
-
-    # 1) Direct substring match
-    for std in STANDARD_PLAN_NAMES:
-        if std.lower() in raw:
-            return std
-
-    # 2) Try translated
-    translated = translate_text_cached(raw)
-    for std in STANDARD_PLAN_NAMES:
-        if std.lower() in translated:
-            return std
-
-    # 3) Token-based exact
-    tokens = re.findall(r"[a-z]+", raw)
-    for token in tokens:
-        for std in STANDARD_PLAN_NAMES:
-            if token == std.lower():
-                return std
-
-    # 4) Fuzzy fallback
-    match = get_close_matches(
-        translated,
-        [n.lower() for n in STANDARD_PLAN_NAMES],
-        n=1,
-        cutoff=0.6,
-    )
-    if match:
-        return match[0].capitalize()
-
-    return "Other"
-
-def is_generic_trial(text: str) -> bool:
-    text = (text or "").strip()
-    if not text:
-        return False
-    translated = translate_text_cached(text)
-    promo = [
-        "go premium", "cancel anytime", "no commitment", "no ads",
-        "annulez à tout moment", "enjoy music", "try premium"
-    ]
-    return sum(p in translated for p in promo) > 1
 
 def _normalize_number(p: str) -> str:
     """
@@ -114,18 +69,42 @@ def _normalize_number(p: str) -> str:
     except Exception:
         return ""
 
-# ---------- Currency ----------
-# (keep your rich token support; the key fix is: we only choose prices that include these tokens)
-CURRENCY_TOKEN = r"(US\$|\$US|U\$S|€|£|¥|₹|₩|₫|₺|₪|₴|₼|₾|₭|฿|₦|₵|₱|Rp|R\$|S/\.|S/|RM|zł|Kč|Ft|lei|лв|KSh|TSh|USh|HK\$|NT\$|S\$|A\$|NZ\$|RD\$|N\$)"
-NUMBER_TOKEN = r"(\d+(?:[.,\s]\d{3})*(?:[.,]\d{1,2})?)"
-PRICE_TOKEN_RE = re.compile(rf"(?:{CURRENCY_TOKEN}\s*{NUMBER_TOKEN}|{NUMBER_TOKEN}\s*{CURRENCY_TOKEN})")
+def normalize_plan_name(name: str) -> str:
+    raw = (name or "").strip().lower()
 
-MONTHY_RE = re.compile(r"(?:/ ?month|\bper month\b|\ba month\b|\bmonthly\b)", re.I)
-AFTER_RE = re.compile(r"\b(after|thereafter|then)\b", re.I)
-FOR_N_MONTHS_RE = re.compile(r"\bfor\s+\d+\s+month", re.I)
+    # Manual overrides
+    if re.search(r"\b(personal|personnel|staff)\b", raw):
+        return "Individual"
 
-def looks_monthly_en(s_en: str) -> bool:
-    return bool(MONTHY_RE.search(s_en))
+    # 1) Direct substring
+    for std in STANDARD_PLAN_NAMES:
+        if std.lower() in raw:
+            return std
+
+    # 2) Translate then match
+    translated = translate_text_cached(raw)
+    for std in STANDARD_PLAN_NAMES:
+        if std.lower() in translated:
+            return std
+
+    # 3) Token-based
+    tokens = re.findall(r"[a-z]+", raw)
+    for token in tokens:
+        for std in STANDARD_PLAN_NAMES:
+            if token == std.lower():
+                return std
+
+    # 4) Fuzzy fallback
+    match = get_close_matches(
+        translated,
+        [n.lower() for n in STANDARD_PLAN_NAMES],
+        n=1,
+        cutoff=0.6,
+    )
+    if match:
+        return match[0].capitalize()
+
+    return "Other"
 
 def default_currency_for_alpha2(alpha2: str) -> str:
     iso2 = (alpha2 or "").upper()
@@ -137,12 +116,47 @@ def default_currency_for_alpha2(alpha2: str) -> str:
         pass
     return ""
 
-def detect_currency_in_text(text: str, alpha2: str) -> str:
-    """
-    Very lightweight for output column.
-    Since we now pick a token that *contains* a currency, we can infer currency from it.
-    """
-    t = _clean_spaces(text)
+# ---------- Currency + Price tokenization ----------
+# We ONLY consider numbers that are part of a currency price token.
+CURRENCY_TOKEN = r"(US\$|\$US|U\$S|€|£|¥|₹|₩|₫|₺|₪|₴|₼|₾|₭|฿|₦|₵|₱|Rp|R\$|S/\.|S/|RM|zł|Kč|Ft|lei|лв|KSh|TSh|USh|HK\$|NT\$|S\$|A\$|NZ\$|RD\$|N\$)"
+NUMBER_TOKEN = r"(\d+(?:[.,\s]\d{3})*(?:[.,]\d{1,2})?)"
+PRICE_TOKEN_RE = re.compile(rf"(?:{CURRENCY_TOKEN}\s*{NUMBER_TOKEN}|{NUMBER_TOKEN}\s*{CURRENCY_TOKEN})")
+
+# Context / intent patterns (multi-language)
+AFTERISH_RAW_RE = re.compile(
+    r"(?i)\b("
+    r"then|after|thereafter|"
+    r"puis|ensuite|après|apres|"
+    r"danach|nach|"
+    r"despu[eé]s|luego|"
+    r"poi|dopo|"
+    r"depois|ap[oó]s"
+    r")\b"
+)
+MONTHISH_RAW_RE = re.compile(
+    r"(?i)("
+    r"/\s*month|\bper\s+month\b|\bmonthly\b|"
+    r"/\s*mo\b|"
+    r"/\s*mois\b|\bmois\b|"
+    r"pro\s+monat|/monat|monatlich|"
+    r"/\s*mes\b|\bal\s+mes\b|"
+    r"/\s*mese\b|\bal\s+mese\b|"
+    r"/\s*m[eê]s\b"
+    r")"
+)
+TRIALISH_RAW_RE = re.compile(
+    r"(?i)\b("
+    r"free|trial|"
+    r"for\s+\d+\s+month|for\s+one\s+month|"
+    r"pour\s+\d+\s+mois|"
+    r"f[uü]r\s+\d+\s+monat|"
+    r"por\s+\d+\s+mes|"
+    r"por\s+\d+\s+m[eê]s"
+    r")\b"
+)
+
+def detect_currency_from_token(token: str, alpha2: str) -> str:
+    t = _clean_spaces(token)
     if "€" in t:
         return "EUR"
     if "£" in t:
@@ -157,29 +171,62 @@ def detect_currency_in_text(text: str, alpha2: str) -> str:
         return "BRL"
     if "US$" in t or "$US" in t or "U$S" in t:
         return "USD"
-    # fallback territory
+    # fallback
     return default_currency_for_alpha2(alpha2)
 
-# ---------- NEW: robust recurring picker (currency-attached only) ----------
-EN_TRIAL_RE = re.compile(r"(?i)\b(free|trial|for\s+\d+\s+month|for\s+one\s+month|1\s+month)\b")
-EN_AFTER_RE = re.compile(r"(?i)\b(then|after|thereafter)\b")
-EN_MONTH_RE = re.compile(r"(?i)(/\s*month\b|\bper\s+month\b|\bmonthly\b|\ba\s+month\b|\beach\s+month\b)")
+def pick_best_after_line(text_block: str) -> str:
+    """
+    From a big block of card text, pick a line that looks like "then €X/month".
+    """
+    t = _clean_spaces(text_block or "")
+    if not t:
+        return ""
 
-def pick_recurring_price_token(full_text: str) -> tuple[str, str]:
+    # split into lines, also split on common separators to help
+    rough_lines = []
+    for chunk in re.split(r"[\n\r]+", t):
+        chunk = _clean_spaces(chunk)
+        if chunk:
+            rough_lines.append(chunk)
+
+    # Also split some long lines by comma / dot separators to find "..., then €X/month"
+    extra = []
+    for ln in rough_lines:
+        for part in re.split(r"[•|,;]+", ln):
+            part = _clean_spaces(part)
+            if part:
+                extra.append(part)
+    lines = rough_lines + extra
+
+    # Prefer lines with after-ish + month-ish + price token
+    for ln in lines:
+        if AFTERISH_RAW_RE.search(ln) and MONTHISH_RAW_RE.search(ln) and PRICE_TOKEN_RE.search(ln):
+            return ln
+
+    # Next: any after-ish line with a price token
+    for ln in lines:
+        if AFTERISH_RAW_RE.search(ln) and PRICE_TOKEN_RE.search(ln):
+            return ln
+
+    return ""
+
+def pick_recurring_price_token(card_text: str) -> tuple[str, str]:
     """
-    Picks the recurring monthly price token (not the trial).
-    IMPORTANT: only considers tokens that contain a currency (via PRICE_TOKEN_RE),
-    which prevents selecting duration-only numbers like "1 month".
-    Returns (display_token, amount_str).
+    Picks recurring monthly price token from a single-card text block.
+    Strategy:
+      1) If any token has AFTERISH context, choose best among those.
+      2) Else choose token with MONTHISH and not TRIALISH.
+      3) Else choose max numeric token.
+    Returns (price_display_token, normalized_amount_str)
     """
-    text = _clean_spaces(full_text or "")
+    text = _clean_spaces(card_text or "")
     if not text:
         return "", ""
 
-    candidates = []
+    cands = []
     for m in PRICE_TOKEN_RE.finditer(text):
-        token = m.group(0)
-        # extract numeric portion from the matched token
+        token = _clean_spaces(m.group(0))
+        # Extract first numeric found in the token
         nums = re.findall(r"\d+(?:[.,]\d+)?", token)
         if not nums:
             continue
@@ -192,33 +239,35 @@ def pick_recurring_price_token(full_text: str) -> tuple[str, str]:
             continue
 
         a, b = m.span()
-        ctx_raw = text[max(0, a - 70): min(len(text), b + 70)]
-        ctx_en = translate_text_cached(ctx_raw)
+        ctx = text[max(0, a - 80): min(len(text), b + 80)]
+        ctx_en = translate_text_cached(ctx)
 
-        has_after = bool(EN_AFTER_RE.search(ctx_en))
-        has_month = bool(EN_MONTH_RE.search(ctx_en))
-        trialish = bool(EN_TRIAL_RE.search(ctx_en)) or is_generic_trial(ctx_raw)
+        afterish = bool(AFTERISH_RAW_RE.search(ctx)) or ("then" in ctx_en) or ("after" in ctx_en) or ("thereafter" in ctx_en)
+        monthish = bool(MONTHISH_RAW_RE.search(ctx)) or ("/month" in ctx_en) or ("per month" in ctx_en) or ("monthly" in ctx_en)
+        trialish = bool(TRIALISH_RAW_RE.search(ctx)) or ("trial" in ctx_en) or ("free" in ctx_en and "month" in ctx_en)
 
-        # scoring: prefer explicit after/then, then monthly, penalize trial contexts
+        # Score
         score = val
         if trialish:
-            score *= 0.2
-        if has_month:
-            score *= 1.8
-        if has_after:
+            score *= 0.15
+        if monthish:
             score *= 1.6
+        if afterish:
+            score *= 1.8
 
-        # tie-break: later occurrences often are the recurring “then X/month”
-        candidates.append((score, val, m.start(), token, norm))
+        cands.append((afterish, monthish, trialish, score, val, m.start(), token, norm))
 
-    if not candidates:
+    if not cands:
         return "", ""
 
-    candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
-    best = candidates[0]
-    return _clean_spaces(best[3]), str(best[4])
+    # Prefer AFTERISH pool if exists
+    after_pool = [c for c in cands if c[0]]
+    pool = after_pool if after_pool else [c for c in cands if c[1] and not c[2]] or cands
 
-# ---------- Country info ----------
+    pool.sort(key=lambda x: (x[3], x[4], x[5]), reverse=True)
+    best = pool[0]
+    return best[6], best[7]
+
 def get_country_info(locale_code):
     base = (locale_code or "").split("-")[0]
     try:
@@ -257,9 +306,7 @@ async def new_context(playwright):
             await route.continue_()
 
     await ctx.route("**/*", route_block)
-    await ctx.add_cookies(
-        [{"name": "sp_lang", "value": "en", "domain": ".spotify.com", "path": "/"}]
-    )
+    await ctx.add_cookies([{"name": "sp_lang", "value": "en", "domain": ".spotify.com", "path": "/"}])
     return browser, ctx
 
 async def safe_goto(page, url, timeout=60000):
@@ -301,13 +348,67 @@ async def fetch_markets(playwright):
         pass
     return result
 
-def pick_after_line(p_texts) -> str:
-    # keep your old behaviour, but it’s optional
-    for pt in (p_texts or [])[:6]:
-        en = translate_text_cached(_clean_spaces(pt))
-        if looks_monthly_en(en) and AFTER_RE.search(en):
-            return pt
-    return ""
+# ---------- NEW: find real plan-card elements (avoids big containers) ----------
+async def find_plan_cards(page):
+    """
+    Build one card element per plan by starting from each h3 and walking up
+    to the closest ancestor that:
+      - contains exactly 1 h3
+      - contains a currency token somewhere OR has a CTA button/link
+    And we choose the SMALLEST matching ancestor (shortest textContent) per title.
+    """
+    h3s = await page.query_selector_all("h3")
+    cards_by_key = {}
+
+    js = r"""
+    (h3) => {
+      const priceRe = /(US\$|\$US|U\$S|€|£|₹|₩|Rp|R\$|zł|Kč|Ft|lei|лв|HK\$|NT\$|S\$|A\$|NZ\$)/;
+      let el = h3;
+      while (el && el !== document.body) {
+        const h3count = el.querySelectorAll('h3').length;
+        const t = (el.textContent || '');
+        const hasPrice = priceRe.test(t);
+        const hasCTA = !!el.querySelector('a,button');
+        if (h3count === 1 && (hasPrice || hasCTA)) {
+          return el;
+        }
+        el = el.parentElement;
+      }
+      return h3.parentElement;
+    }
+    """
+
+    for h3 in h3s:
+        try:
+            title = _clean_spaces(await h3.inner_text())
+            if not title:
+                continue
+
+            std = normalize_plan_name(title)
+            if std == "Other":
+                continue
+
+            title_key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+            key = (std, title_key)
+
+            handle = await h3.evaluate_handle(js)
+            el = handle.as_element()
+            if el is None:
+                continue
+
+            text_len = await el.evaluate("el => (el.textContent || '').length")
+
+            # keep the smallest ancestor for this plan title
+            if key not in cards_by_key or text_len < cards_by_key[key][0]:
+                cards_by_key[key] = (text_len, el, title, std)
+        except Exception:
+            continue
+
+    # Return list of (element, title, std)
+    out = []
+    for _, el, title, std in cards_by_key.values():
+        out.append((el, title, std))
+    return out
 
 # ---------- Scrape one market ----------
 async def scrape_country(locale, playwright, semaphore):
@@ -321,86 +422,65 @@ async def scrape_country(locale, playwright, semaphore):
         plans = []
         ok = await safe_goto(page, url, timeout=70000)
         if ok:
-            await page.wait_for_timeout(1200)
-            cards = await page.query_selector_all("section:has(h3), div:has(h3), article:has(h3)")
+            await page.wait_for_timeout(1500)
 
-            seen = set()
-            for card in cards:
+            card_items = await find_plan_cards(page)
+
+            for el, title, std in card_items:
                 try:
-                    h3 = await card.query_selector("h3")
-                    title = await (h3.inner_text() if h3 else "Unknown")
-                    if not title.strip():
-                        continue
-
-                    std = normalize_plan_name(title)
-                    if std == "Other":
-                        continue
-
-                    title_key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
-                    key = (std, title_key)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-
-                    # Grab p texts (for Trial Info display)
-                    p_tags = await card.query_selector_all("p")
+                    # p texts for Trial Info display (visible)
+                    p_tags = await el.query_selector_all("p")
                     p_texts = []
                     for p in p_tags:
                         try:
                             t = await p.inner_text()
                             if t:
-                                p_texts.append(t)
+                                p_texts.append(_clean_spaces(t))
                         except Exception:
                             pass
 
-                    # IMPORTANT: use textContent to include hidden/legal "then X/month"
+                    # textContent to include hidden terms (often contains "then €X/month")
                     try:
-                        full_text_all = await card.evaluate("(el) => el.textContent || ''")
+                        card_text = _clean_spaces(await el.evaluate("(x) => x.textContent || ''"))
                     except Exception:
-                        full_text_all = " ".join(p_texts)
+                        card_text = " ".join(p_texts)
 
-                    try:
-                        full_text_visible = await card.inner_text()
-                    except Exception:
-                        full_text_visible = " ".join(p_texts)
+                    # 1) find explicit "after/then" line and use that for recurring
+                    after_line = pick_best_after_line(card_text)
 
-                    # ---------- FIX: choose recurring price from currency-attached tokens ----------
-                    price_display, amount = pick_recurring_price_token(full_text_all)
+                    if after_line:
+                        price_display, amount = pick_recurring_price_token(after_line)
+                        price_after_trial = after_line
+                    else:
+                        # 2) otherwise pick best recurring token from the card
+                        price_display, amount = pick_recurring_price_token(card_text)
+                        price_after_trial = ""
 
-                    # fallback to visible text if needed
                     if not amount:
-                        price_display, amount = pick_recurring_price_token(full_text_visible)
+                        continue
 
-                    # still nothing? last resort: try first price-like token from p_texts join
-                    if not amount:
-                        price_display, amount = pick_recurring_price_token(" ".join(p_texts))
+                    currency = detect_currency_from_token(price_display, a2) or default_currency_for_alpha2(a2)
 
-                    # Trial line shown to user (keep simple)
                     trial = p_texts[0] if p_texts else ""
 
-                    # Optional: a line that says "then/after"
-                    after = pick_after_line(p_texts)
-
-                    if amount:
-                        currency = detect_currency_in_text(price_display, a2) or default_currency_for_alpha2(a2)
-
-                        plans.append(
-                            {
-                                "Country Code": locale,
-                                "Country Name (resolved)": cname,
-                                "Country Standard Name": cname,
-                                "Alpha-2": a2,
-                                "Alpha-3": a3,
-                                "Plan Name": title,
-                                "Standard Plan Name": std,
-                                "Trial Info": trial,
-                                "Currency": currency,
-                                "Price": amount,
-                                "Billing Frequency": "month",
-                                "Price After Trial": after,
-                                "URL": url,
-                            }
-                        )
+                    plans.append(
+                        {
+                            "Country Code": locale,
+                            "Country Name (resolved)": cname,
+                            "Country Standard Name": cname,
+                            "Alpha-2": a2,
+                            "Alpha-3": a3,
+                            "Plan Name": title,
+                            "Standard Plan Name": std,
+                            "Trial Info": trial,
+                            "Currency": currency,
+                            # IMPORTANT: Price is the recurring price (after trial if present)
+                            "Price": amount,
+                            "Billing Frequency": "month",
+                            "Price After Trial": price_after_trial,
+                            "URL": url,
+                        }
+                    )
                 except Exception:
                     pass
 
@@ -448,7 +528,7 @@ async def run():
         pbar.close()
 
         if not all_plans:
-            log("❌ No plan cards scraped. Try again.")
+            log("❌ No plan cards scraped.")
             return
 
         df = pd.DataFrame(all_plans)
@@ -489,7 +569,10 @@ async def run():
         with pd.ExcelWriter(xlsx_out, engine="openpyxl") as w:
             df.to_excel(w, index=False)
 
-        log(f"\n🎉 Done! Saved {csv_out} and {xlsx_out} | Rows: {len(df)} Countries: {df['Country Alpha-2'].nunique()}")
+        log(
+            f"\n🎉 Done! Saved {csv_out} and {xlsx_out} | "
+            f"Rows: {len(df)} Countries: {df['Country Alpha-2'].nunique()}"
+        )
 
         from pathlib import Path
         return str(Path(xlsx_out).resolve())
