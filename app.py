@@ -338,7 +338,7 @@ def run_with_progress(dsp_name: str, test_mode: bool, test_countries=None):
         )
         time.sleep(0.6)
 
-thread.join()
+    thread.join()
 
     if result["error"]:
         progress.empty()
@@ -357,6 +357,7 @@ thread.join()
     progress.progress(100, text=f"{dsp_name}: 100% • Completed")
     status_placeholder.success("Scrape finished successfully.")
     return result["path"]
+
 def render_table(excel_path: str, dsp_name: str):
     if not excel_path or not os.path.exists(excel_path):
         st.error("File not found – scraper may not have produced an output.")
@@ -575,6 +576,7 @@ with main_tabs[3]:
         logo_filename="disney_plus_logo.png",
         description="Scrape Disney+ pricing with currency, plan and country codes.",
     )
+
 
 
 
