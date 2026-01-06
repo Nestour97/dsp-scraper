@@ -1086,21 +1086,33 @@ def run_scraper(country_codes_override=None):
 
     return out_name
 
-def run_apple_music_scraper(test_mode: bool = True, test_countries=None) -> str:
+from pathlib import Path  # put near the top of the file if not already imported
+
+def run_apple_music_scraper(test_mode: bool = True, test_countries=None) -> str | None:
     global TEST_MODE, TEST_COUNTRIES
     TEST_MODE = bool(test_mode)
 
     country_override = None
     if TEST_MODE and test_countries:
-        TEST_COUNTRIES = [c.strip().upper() for c in test_countries if c and len(c.strip()) == 2]
+        TEST_COUNTRIES = [
+            c.strip().upper()
+            for c in test_countries
+            if c and len(c.strip()) == 2
+        ]
         country_override = TEST_COUNTRIES
         print(f"[APPLE MUSIC] UI-driven test countries: {TEST_COUNTRIES}")
 
     start = time.time()
-    run_scraper(country_codes_override=country_override)
+    out_name = run_scraper(country_codes_override=country_override)
     print(f"[APPLE MUSIC] Finished in {round(time.time() - start, 2)}s")
 
-    return "apple_music_plans_TEST.xlsx" if TEST_MODE else "apple_music_plans_all.xlsx"
+    # Propagate "no rows scraped" / failure up to the app
+    if not out_name:
+        return None
+
+    # Match what the other scrapers do: return an absolute path
+    return str(Path(out_name).resolve())
+
 
 if __name__ == "__main__":
     start = time.time()
