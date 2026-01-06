@@ -15,6 +15,7 @@ import re, time, threading, sqlite3, asyncio
 from datetime import datetime, UTC, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
+from pathlib import Path  # put near the top of the file if not already imported
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -1086,32 +1087,41 @@ def run_scraper(country_codes_override=None):
 
     return out_name
 
-from pathlib import Path  # put near the top of the file if not already imported
+
 
 def run_apple_music_scraper(test_mode: bool = True, test_countries=None) -> str | None:
+    """
+    Entry point used by the Streamlit app.
+
+    - In test_mode, respects `test_countries` by updating TEST_COUNTRIES and
+      then calling `run_scraper()` exactly like the CLI entrypoint.
+    - In full mode, ignores `test_countries` and runs a global scrape.
+    - Returns an absolute path to the Excel file, or None if nothing was written.
+    """
     global TEST_MODE, TEST_COUNTRIES
     TEST_MODE = bool(test_mode)
 
-    country_override = None
+    # Mirror CLI behaviour: TEST_COUNTRIES controls the list when TEST_MODE is True.
     if TEST_MODE and test_countries:
         TEST_COUNTRIES = [
             c.strip().upper()
             for c in test_countries
             if c and len(c.strip()) == 2
         ]
-        country_override = TEST_COUNTRIES
-        print(f"[APPLE MUSIC] UI-driven test countries: {TEST_COUNTRIES}")
+        print(f"[APPLE MUSIC] UI-driven TEST_COUNTRIES: {TEST_COUNTRIES}")
 
     start = time.time()
-    out_name = run_scraper(country_codes_override=country_override)
+    # IMPORTANT: no country_codes_override here – behave like CLI
+    out_name = run_scraper()
     print(f"[APPLE MUSIC] Finished in {round(time.time() - start, 2)}s")
 
-    # Propagate "no rows scraped" / failure up to the app
     if not out_name:
+        # run_scraper() returns None when it scraped zero rows
         return None
 
-    # Match what the other scrapers do: return an absolute path
+    # App expects an absolute path, just like Spotify/Disney wrappers
     return str(Path(out_name).resolve())
+
 
 
 if __name__ == "__main__":
