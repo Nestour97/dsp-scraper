@@ -6,15 +6,14 @@ from playwright.async_api import async_playwright
 import pycountry
 from difflib import get_close_matches
 from googletrans import Translator
-from forex_python.converter import CurrencyCodes
 from tqdm.auto import tqdm
 from datetime import date
 from babel.numbers import get_territory_currencies
 
 # ---------- Config ----------
 STANDARD_PLAN_NAMES = [
-    "Platinum",   # new priority
-    "Lite",       # keep high for matching
+    "Platinum",
+    "Lite",
     "Individual",
     "Student",
     "Family",
@@ -26,7 +25,6 @@ STANDARD_PLAN_NAMES = [
 ]
 
 translator = Translator()
-currency_converter = CurrencyCodes()
 MAX_CONCURRENCY = 3
 HEADLESS = True
 
@@ -35,11 +33,8 @@ TEST_MODE = False
 TEST_MARKETS = ["kr"]
 
 # ---------- Utilities ----------
-
-
 def log(msg):
     print(msg, flush=True)
-
 
 @functools.lru_cache(maxsize=1024)
 def translate_text_cached(text: str) -> str:
@@ -48,6 +43,8 @@ def translate_text_cached(text: str) -> str:
     except Exception:
         return (text or "").lower()
 
+def _clean_spaces(s: str) -> str:
+    return (s or "").replace("\xa0", " ").strip()
 
 def normalize_plan_name(name: str) -> str:
     raw = (name or "").strip().lower()
@@ -56,25 +53,25 @@ def normalize_plan_name(name: str) -> str:
     if re.search(r"\b(personal|personnel|staff)\b", raw):
         return "Individual"
 
-    # 1. Direct simple substring match
+    # 1) Direct substring match
     for std in STANDARD_PLAN_NAMES:
         if std.lower() in raw:
             return std
 
-    # 2. Try translated version
+    # 2) Try translated
     translated = translate_text_cached(raw)
     for std in STANDARD_PLAN_NAMES:
         if std.lower() in translated:
             return std
 
-    # 3. Token-based exact matching
+    # 3) Token-based exact
     tokens = re.findall(r"[a-z]+", raw)
     for token in tokens:
         for std in STANDARD_PLAN_NAMES:
             if token == std.lower():
                 return std
 
-    # 4. Fuzzy matching fallback
+    # 4) Fuzzy fallback
     match = get_close_matches(
         translated,
         [n.lower() for n in STANDARD_PLAN_NAMES],
@@ -86,396 +83,28 @@ def normalize_plan_name(name: str) -> str:
 
     return "Other"
 
-
 def is_generic_trial(text: str) -> bool:
     text = (text or "").strip()
     if not text:
         return False
     translated = translate_text_cached(text)
     promo = [
-        "go premium",
-        "control of your music",
-        "cancel anytime",
-        "no commitment",
-        "listen on your phone",
-        "pay different ways",
-        "no ads",
-        "full control",
-        "annulez à tout moment",
-        "enjoy music",
+        "go premium", "cancel anytime", "no commitment", "no ads",
+        "annulez à tout moment", "enjoy music", "try premium"
     ]
     return sum(p in translated for p in promo) > 1
 
-
-def _clean_spaces(s: str) -> str:
-    return (s or "").replace("\xa0", " ").strip()
-
-
-# ---------- Currency detection ----------
-
-# Strong tokens (explicit, unambiguous)
-STRONG_TOKENS = [
-    # Explicit US dollar markers
-    (r"(?i)US\$", "USD"),   # US$4.99, US$ 4.99
-    (r"(?i)\$US", "USD"),   # 7,99 $US/mois
-    (r"(?i)U\$S", "USD"),   # U$S 4,99
-    # Other $-based symbols with prefixes
-    (r"(?i)\bA\$", "AUD"),
-    (r"(?i)\bNZ\$", "NZD"),
-    (r"(?i)\bHK\$", "HKD"),
-    (r"(?i)\bNT\$", "TWD"),
-    (r"(?i)\bS\$", "SGD"),
-    (r"(?i)\bRD\$", "DOP"),
-    (r"(?i)\bN\$", "NAD"),
-    # Latin America / others
-    (r"R\$", "BRL"),
-    (r"S/\.", "PEN"),
-    (r"S/", "PEN"),
-    (r"Bs\.?", "BOB"),
-    (r"Gs\.?", "PYG"),
-    (r"₲", "PYG"),
-    (r"Q(?=[\s\d])", "GTQ"),
-    # Single-char symbols
-    (r"€", "EUR"),
-    (r"£", "GBP"),
-    (r"¥", "JPY"),
-    (r"₹", "INR"),
-    (r"₩", "KRW"),
-    (r"₫", "VND"),
-    (r"₺", "TRY"),
-    (r"₪", "ILS"),
-    (r"₴", "UAH"),
-    (r"₼", "AZN"),
-    (r"₾", "GEL"),
-    (r"₭", "LAK"),
-    (r"฿", "THB"),
-    (r"₦", "NGN"),
-    (r"₵", "GHS"),
-    (r"KSh", "KES"),
-    (r"TSh", "TZS"),
-    (r"USh", "UGX"),
-    (r"Rp", "IDR"),
-    (r"zł", "PLN"),
-    (r"Kč", "CZK"),
-    (r"Ft", "HUF"),
-    (r"lei", "RON"),
-    (r"лв", "BGN"),
-    (r"ден", "MKD"),
-    (r"RM", "MYR"),
-    (r"₱", "PHP"),
-]
-
-# Ambiguous tokens → resolve by territory default
-AMBIG_TOKENS = {
-    r"\$": {
-        "USD",
-        "MXN",
-        "ARS",
-        "CLP",
-        "COP",
-        "CAD",
-        "AUD",
-        "NZD",
-        "SGD",
-        "HKD",
-        "TWD",
-        "UYU",
-        "BBD",
-        "BSD",
-        "DOP",
-        "CRC",
-        "PAB",
-        "HNL",
-        "JMD",
-    },
-    r"\bkr\.?\b": {"SEK", "NOK", "DKK", "ISK"},
-    r"\bRs\.?\b": {"INR", "PKR", "LKR", "NPR"},
-    r"₨": {"INR", "PKR", "LKR", "NPR"},
-    r"(?i)\bC\$\b": {"CAD", "NIO"},
-    r"\bR(?=[\s\d])": {"ZAR"},
-}
-
-# Last-resort country → currency map
-HARDCODE_FALLBACKS = {
-    # Americas + dollarised
-    "US": "USD",
-    "CA": "CAD",
-    "MX": "MXN",
-    "BR": "BRL",
-    "AR": "ARS",
-    "CL": "CLP",
-    "CO": "COP",
-    "PE": "PEN",
-    "UY": "UYU",
-    "PY": "PYG",
-    "BO": "BOB",
-    "NI": "NIO",
-    "GT": "GTQ",
-    "CR": "CRC",
-    "PA": "PAB",
-    "HN": "HNL",
-    "DO": "DOP",
-    "JM": "JMD",
-    "BB": "BBD",
-    "BS": "BSD",
-    "BZ": "BZD",
-    # dollarised countries that use $ on Spotify pages
-    "EC": "USD",
-    "SV": "USD",
-    # Europe
-    "GB": "GBP",
-    "IE": "EUR",
-    "FR": "EUR",
-    "DE": "EUR",
-    "ES": "EUR",
-    "IT": "EUR",
-    "PT": "EUR",
-    "NL": "EUR",
-    "BE": "EUR",
-    "LU": "EUR",
-    "AT": "EUR",
-    "FI": "EUR",
-    "EE": "EUR",
-    "LV": "EUR",
-    "LT": "EUR",
-    "SK": "EUR",
-    "SI": "EUR",
-    "GR": "EUR",
-    "CY": "EUR",
-    "MT": "EUR",
-    "BG": "BGN",
-    "RO": "RON",
-    "PL": "PLN",
-    "CZ": "CZK",
-    "HU": "HUF",
-    "HR": "EUR",
-    "DK": "DKK",
-    "SE": "SEK",
-    "NO": "NOK",
-    "IS": "ISK",
-    "CH": "CHF",
-    "RS": "RSD",
-    "BA": "BAM",
-    "MK": "MKD",
-    "AL": "ALL",
-    "UA": "UAH",
-    "GE": "GEL",
-    "AZ": "AZN",
-    "AM": "AMD",
-    "KZ": "KZT",
-    "MD": "MDL",
-    "BY": "BYN",
-    "TR": "TRY",
-    # MENA
-    "AE": "AED",
-    "SA": "SAR",
-    "QA": "QAR",
-    "KW": "KWD",
-    "BH": "BHD",
-    "OM": "OMR",
-    "IL": "ILS",
-    "EG": "EGP",
-    "MA": "MAD",
-    "TN": "TND",
-    "DZ": "DZD",
-    "IQ": "IQD",
-    # Africa
-    "ZA": "ZAR",
-    "NG": "NGN",
-    "GH": "GHS",
-    "KE": "KES",
-    "TZ": "TZS",
-    "UG": "UGX",
-    "CM": "XAF",
-    "CI": "XOF",
-    "SN": "XOF",
-    "RW": "RWF",
-    "BI": "BIF",
-    "CD": "CDF",
-    # APAC & Pacific
-    "JP": "JPY",
-    "KR": "KRW",
-    "CN": "CNY",
-    "TW": "TWD",
-    "HK": "HKD",
-    "SG": "SGD",
-    "MY": "MYR",
-    "TH": "THB",
-    "VN": "VND",
-    "PH": "PHP",
-    "ID": "IDR",
-    "IN": "INR",
-    "PK": "PKR",
-    "LK": "LKR",
-    "NP": "NPR",
-    "BD": "BDT",
-    "AU": "AUD",
-    "NZ": "NZD",
-    # Small states that use AUD on Spotify
-    "KI": "AUD",
-    "NR": "AUD",
-    "TV": "AUD",
-    # Marshall Islands use USD
-    "MH": "USD",
-}
-
-
-def default_currency_for_alpha2(alpha2: str) -> str:
-    """Babel first, then hardcoded fallback, then empty string."""
-    iso2 = (alpha2 or "").upper()
-    try:
-        currs = get_territory_currencies(iso2, date=date.today(), non_tender=False)
-        if currs:
-            return currs[0]
-    except Exception:
-        pass
-    return HARDCODE_FALLBACKS.get(iso2, "")
-
-
-# Known ISO codes (for adjacency matching only)
-KNOWN_ISO = set(HARDCODE_FALLBACKS.values()) | {
-    "EUR",
-    "USD",
-    "GBP",
-    "AUD",
-    "CAD",
-    "NZD",
-    "SGD",
-    "HKD",
-    "TWD",
-    "MXN",
-    "ARS",
-    "CLP",
-    "COP",
-    "PEN",
-    "BOB",
-    "NIO",
-    "GTQ",
-    "PYG",
-    "UYU",
-    "ZAR",
-    "NAD",
-    "CHF",
-    "NOK",
-    "SEK",
-    "DKK",
-    "PLN",
-    "CZK",
-    "HUF",
-    "RON",
-    "BGN",
-    "RSD",
-    "BAM",
-    "MKD",
-    "ALL",
-    "GEL",
-    "AMD",
-    "AZN",
-    "UAH",
-    "KZT",
-    "MDL",
-    "BYN",
-    "TRY",
-    "ILS",
-    "AED",
-    "SAR",
-    "QAR",
-    "KWD",
-    "BHD",
-    "OMR",
-    "PKR",
-    "LKR",
-    "NPR",
-    "INR",
-    "BDT",
-    "MMK",
-    "KHR",
-    "VND",
-    "THB",
-    "MYR",
-    "IDR",
-    "PHP",
-    "LAK",
-    "MNT",
-    "CNY",
-    "JPY",
-    "KRW",
-    "TJS",
-    "TMT",
-    "AFN",
-    "MZN",
-    "AOA",
-    "LRD",
-    "SLL",
-    "GMD",
-    "GIP",
-    "DOP",
-    "CRC",
-    "PAB",
-    "HNL",
-    "JMD",
-    "BBD",
-    "BSD",
-    "BZD",
-    "EGP",
-    "MAD",
-    "TND",
-    "DZD",
-    "XAF",
-    "XOF",
-    "XPF",
-    "CDF",
-    "RWF",
-    "BIF",
-}
-
-
-def detect_currency_in_text(text: str, alpha2: str):
-    """
-    Find the currency used in a line of text.
-
-    Priority:
-      1) Strong symbol / token (STRONG_TOKENS)  → ISO from symbol
-      2) 3-letter ISO codes near a number       → that ISO
-      3) Ambiguous symbols ($, kr, Rs, ₨)       → country default
-      4) Nothing found                          → country default
-    """
-    s = _clean_spaces(text)
-    if not s:
-        return "", "territory_default"
-
-    # 1) Strong symbol / token
-    for pat, iso in STRONG_TOKENS:
-        if re.search(pat, s):
-            return iso, "symbol"
-
-    # 2) 3-letter ISO codes, near a number
-    S = s.upper()
-    for m in re.finditer(r"\b([A-Z]{3})\b", S):
-        code = m.group(1)
-        if code not in KNOWN_ISO:
-            continue
-        a, b = m.span()
-        window = S[max(0, a - 6): min(len(S), b + 6)]
-        if re.search(r"\d", window):
-            return code, "code"
-
-    # 3) Ambiguous tokens → country default
-    for pat, _cands in AMBIG_TOKENS.items():
-        if re.search(pat, s):
-            d = default_currency_for_alpha2(alpha2)
-            return (d or ""), "ambiguous->default"
-
-    # 4) Territory default fallback
-    return default_currency_for_alpha2(alpha2), "territory_default"
-
-
 def _normalize_number(p: str) -> str:
+    """
+    Normalize localized numbers:
+    - "10,99" -> "10.99"
+    - "1 299,00" -> "1299.00"
+    """
     p = (p or "").replace(" ", "")
     dm = re.search(r"([.,])(\d{1,2})$", p)
     if dm:
         frac = dm.group(2)
-        base = p[:- len(dm.group(0))].replace(".", "").replace(",", "")
+        base = p[:-len(dm.group(0))].replace(".", "").replace(",", "")
         try:
             return str(float(base + "." + frac))
         except Exception:
@@ -485,215 +114,111 @@ def _normalize_number(p: str) -> str:
     except Exception:
         return ""
 
-
-# ------------ PRICE PARSING ------------
-
-def extract_amount_number(text: str) -> str:
-    """Return the monetary number in a line, preferring the number after a currency sign/code."""
-    if not isinstance(text, str) or not text.strip():
-        return ""
-    t = _clean_spaces(text)
-    tr = translate_text_cached(t)
-
-    # 1) Prefer number immediately after a strong currency token (Rp, ₹, $, SAR, etc.)
-    for pat, _iso in STRONG_TOKENS:
-        m = re.search(pat, t)
-        if m:
-            after = t[m.end():]
-            n = re.search(r"\d+(?:[.,]\d+)?", after)
-            if n:
-                return _normalize_number(n.group(0))
-
-    # 2) Handle ISO codes around numbers
-    S = t.upper()
-    m = re.search(r"\b([A-Z]{3})\b\s*(\d+(?:[.,]\d+)?)", S)
-    if m and m.group(1) in KNOWN_ISO:
-        return _normalize_number(m.group(2))
-    m = re.search(r"(\d+(?:[.,]\d+)?)\s*\b([A-Z]{3})\b", S)
-    if m and m.group(2) in KNOWN_ISO:
-        return _normalize_number(m.group(1))
-
-    # 3) Original logic as fallback
-    m = re.search(
-        r"(?:US\$|[€£¥₩₫₺₪₴₼₾₭฿₦₵₱]|NT\$|HK\$|S/\.|S/|R\$|RD\$|N\$|KSh|TSh|USh)\s*\d+(?:[.,]\d+)?",
-        tr,
-        re.I,
-    )
-    if not m:
-        m = re.search(
-            r"\b(?:USD|EUR|GBP|AUD|CAD|NZD|SGD|HKD|TWD|MXN|ARS|CLP|COP|PEN|BOB|NIO|GTQ|PYG|UYU|BRL|ZAR|NAD|CHF|NOK|SEK|DKK|PLN|CZK|HUF|RON|BGN|RSD|BAM|MKD|TRY|ILS|AED|SAR|QAR|KWD|BHD|OMR|INR|PKR|LKR|NPR|MYR|IDR|PHP|VND|THB|KRW|JPY|CNY)\s*\d+(?:[.,]\d+)?",
-            tr,
-            re.I,
-        )
-    if m:
-        token = m.group(0)
-        n = re.search(r"(?<!\d)(\d+(?:[.,]\d+)?)", token)
-        if n:
-            return _normalize_number(n.group(1))
-
-    m = re.search(
-        r"(?:after|then|per\s+month|monthly|month)\D{0,12}(\d+(?:[.,]\d+)?)",
-        tr,
-        re.I,
-    )
-    if m and not re.search(r"hour|hours|hr|hrs|minute|min", m.group(0), re.I):
-        return _normalize_number(m.group(1))
-
-    if is_generic_trial(t):
-        m2 = re.search(
-            r"(?:for\s+1\s+month|trial|free\s+for\s+\d+\s+month(?:s)?)\D{0,12}(\d+(?:[.,]\d+)?)",
-            tr,
-            re.I,
-        )
-        if m2 and not re.search(r"hour|hours|hr|hrs|minute|min", m2.group(0), re.I):
-            return _normalize_number(m2.group(1))
-
-    candidates = []
-    for m in re.finditer(r"\d+(?:[.,]\d+)?", tr):
-        num = m.group(0)
-        end = m.span()[1]
-        tail = tr[end: end + 8]
-        if re.search(r"^\s*[/\-]?\s*(?:hour|hours|hr|hrs|minute|min)\b", tail, re.I):
-            continue
-        candidates.append(num)
-    if candidates:
-        return _normalize_number(candidates[-1])
-    return ""
-
-
-# ---------- Price-line chooser ----------
+# ---------- Currency ----------
+# (keep your rich token support; the key fix is: we only choose prices that include these tokens)
+CURRENCY_TOKEN = r"(US\$|\$US|U\$S|€|£|¥|₹|₩|₫|₺|₪|₴|₼|₾|₭|฿|₦|₵|₱|Rp|R\$|S/\.|S/|RM|zł|Kč|Ft|lei|лв|KSh|TSh|USh|HK\$|NT\$|S\$|A\$|NZ\$|RD\$|N\$)"
+NUMBER_TOKEN = r"(\d+(?:[.,\s]\d{3})*(?:[.,]\d{1,2})?)"
+PRICE_TOKEN_RE = re.compile(rf"(?:{CURRENCY_TOKEN}\s*{NUMBER_TOKEN}|{NUMBER_TOKEN}\s*{CURRENCY_TOKEN})")
 
 MONTHY_RE = re.compile(r"(?:/ ?month|\bper month\b|\ba month\b|\bmonthly\b)", re.I)
-AFTER_RE = re.compile(r"\b(after|thereafter|then|month after)\b", re.I)
+AFTER_RE = re.compile(r"\b(after|thereafter|then)\b", re.I)
 FOR_N_MONTHS_RE = re.compile(r"\bfor\s+\d+\s+month", re.I)
-
 
 def looks_monthly_en(s_en: str) -> bool:
     return bool(MONTHY_RE.search(s_en))
 
-
-def choose_price_line(p_texts, alpha2: str) -> str:
-    """Pick the most reliable price line from the <p> lines in a card."""
-    lines = [
-        (_clean_spaces(x), translate_text_cached(_clean_spaces(x)))
-        for x in (p_texts or [])
-        if x and x.strip()
-    ]
-    if not lines:
-        return ""
-    # 1) Monthly + 'after/thereafter' (real monthly after promo)
-    for raw, en in lines[:4]:
-        if looks_monthly_en(en) and AFTER_RE.search(en):
-            return raw
-    # 2) Monthly but NOT 'for N months' (avoid $0 promos)
-    for raw, en in lines[:4]:
-        if looks_monthly_en(en) and not FOR_N_MONTHS_RE.search(en):
-            return raw
-    # 3) Any line with currency and a number
-    for raw, en in lines[:4]:
-        cur, _ = detect_currency_in_text(raw, alpha2)
-        if cur and re.search(r"\d", raw):
-            return raw
-    # 4) Fallback: first <p>
-    return lines[0][0]
-
-
-def pick_after_line(p_texts) -> str:
-    for pt in p_texts[:4]:
-        en = translate_text_cached(_clean_spaces(pt))
-        if looks_monthly_en(en) and AFTER_RE.search(en):
-            return pt
+def default_currency_for_alpha2(alpha2: str) -> str:
+    iso2 = (alpha2 or "").upper()
+    try:
+        currs = get_territory_currencies(iso2, date=date.today(), non_tender=False)
+        if currs:
+            return currs[0]
+    except Exception:
+        pass
     return ""
 
-
-# ---------- NEW: recurring price picker (smart, trial-aware) ----------
-
-TRIAL_HINT_EXTRA = re.compile(
-    r"(free\s+for\s+\d+\s+month|"
-    r"free\s+for\s+one\s+month|"
-    r"try\s+premium\s+free|"
-    r"try\s+it\s+free|"
-    r"trial)",
-    re.I,
-)
-
-
-def pick_recurring_amount_from_card(full_text: str, alpha2: str) -> tuple[str, str]:
+def detect_currency_in_text(text: str, alpha2: str) -> str:
     """
-    Inspect all numeric tokens in a card and choose the one that most likely
-    represents the recurring monthly price (not the trial amount).
+    Very lightweight for output column.
+    Since we now pick a token that *contains* a currency, we can infer currency from it.
+    """
+    t = _clean_spaces(text)
+    if "€" in t:
+        return "EUR"
+    if "£" in t:
+        return "GBP"
+    if "₹" in t:
+        return "INR"
+    if "₩" in t:
+        return "KRW"
+    if "Rp" in t:
+        return "IDR"
+    if "R$" in t:
+        return "BRL"
+    if "US$" in t or "$US" in t or "U$S" in t:
+        return "USD"
+    # fallback territory
+    return default_currency_for_alpha2(alpha2)
 
-    Returns (amount_str, context_snippet).
+# ---------- NEW: robust recurring picker (currency-attached only) ----------
+EN_TRIAL_RE = re.compile(r"(?i)\b(free|trial|for\s+\d+\s+month|for\s+one\s+month|1\s+month)\b")
+EN_AFTER_RE = re.compile(r"(?i)\b(then|after|thereafter)\b")
+EN_MONTH_RE = re.compile(r"(?i)(/\s*month\b|\bper\s+month\b|\bmonthly\b|\ba\s+month\b|\beach\s+month\b)")
+
+def pick_recurring_price_token(full_text: str) -> tuple[str, str]:
+    """
+    Picks the recurring monthly price token (not the trial).
+    IMPORTANT: only considers tokens that contain a currency (via PRICE_TOKEN_RE),
+    which prevents selecting duration-only numbers like "1 month".
+    Returns (display_token, amount_str).
     """
     text = _clean_spaces(full_text or "")
     if not text:
         return "", ""
 
     candidates = []
-
-    for m in re.finditer(r"\d+(?:[.,]\d+)?", text):
-        raw_num = m.group(0)
-        norm = _normalize_number(raw_num)
+    for m in PRICE_TOKEN_RE.finditer(text):
+        token = m.group(0)
+        # extract numeric portion from the matched token
+        nums = re.findall(r"\d+(?:[.,]\d+)?", token)
+        if not nums:
+            continue
+        norm = _normalize_number(nums[0])
         if not norm:
             continue
         try:
-            value = float(norm)
+            val = float(norm)
         except Exception:
             continue
 
-        start, end = m.span()
-        ctx_raw = text[max(0, start - 60): min(len(text), end + 60)]
+        a, b = m.span()
+        ctx_raw = text[max(0, a - 70): min(len(text), b + 70)]
         ctx_en = translate_text_cached(ctx_raw)
 
-        # Heuristics
-        has_month = looks_monthly_en(ctx_en)
-        has_after = bool(AFTER_RE.search(ctx_en))
-        has_for_n = bool(FOR_N_MONTHS_RE.search(ctx_en))
+        has_after = bool(EN_AFTER_RE.search(ctx_en))
+        has_month = bool(EN_MONTH_RE.search(ctx_en))
+        trialish = bool(EN_TRIAL_RE.search(ctx_en)) or is_generic_trial(ctx_raw)
 
-        # Trial-ish if it's clearly about a limited period / free month
-        trialish = (
-            has_for_n
-            or "trial" in ctx_en
-            or ("free" in ctx_en and "month" in ctx_en)
-            or bool(TRIAL_HINT_EXTRA.search(ctx_en))
-        )
-        if is_generic_trial(ctx_raw):
-            trialish = True
-
-        cur, _ = detect_currency_in_text(ctx_raw, alpha2)
-        has_currency = bool(cur)
-
-        # Scoring: start from value, then tilt toward recurring-monthly
-        score = value
-
-        # Strong penalty for obvious trial text
+        # scoring: prefer explicit after/then, then monthly, penalize trial contexts
+        score = val
         if trialish:
             score *= 0.2
-
-        # Strong boost for monthly recurring context (but not “for N months” promo)
-        if has_month and not has_for_n:
-            score *= 1.7
-
-        # Extra boost if explicitly “then/after”
+        if has_month:
+            score *= 1.8
         if has_after:
-            score *= 1.4
+            score *= 1.6
 
-        # Small bonus if currency is clearly present
-        if has_currency:
-            score *= 1.2
-
-        candidates.append((score, norm, ctx_raw))
+        # tie-break: later occurrences often are the recurring “then X/month”
+        candidates.append((score, val, m.start(), token, norm))
 
     if not candidates:
         return "", ""
 
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    _, best_amount, best_ctx = candidates[0]
-    return best_amount, best_ctx
+    candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+    best = candidates[0]
+    return _clean_spaces(best[3]), str(best[4])
 
-
-# ---------- Country info / currency hints ----------
-
+# ---------- Country info ----------
 def get_country_info(locale_code):
     base = (locale_code or "").split("-")[0]
     try:
@@ -702,19 +227,7 @@ def get_country_info(locale_code):
     except Exception:
         return "Unknown", base.upper(), base.upper()
 
-
-def detect_currency_from_hints(texts, alpha2):
-    for t in texts:
-        if not t:
-            continue
-        cur, src = detect_currency_in_text(t, alpha2)
-        if cur:
-            return cur, src
-    return default_currency_for_alpha2(alpha2), "territory_default"
-
-
 # ---------- Playwright helpers ----------
-
 async def new_context(playwright):
     browser = await playwright.chromium.launch(
         headless=HEADLESS,
@@ -749,7 +262,6 @@ async def new_context(playwright):
     )
     return browser, ctx
 
-
 async def safe_goto(page, url, timeout=60000):
     for i in range(3):
         try:
@@ -761,18 +273,11 @@ async def safe_goto(page, url, timeout=60000):
             await asyncio.sleep(1.0 + i * 0.6)
     return False
 
-
 # ---------- Market discovery ----------
-
 async def fetch_markets(playwright):
-    """Return a LIST of locale codes (e.g. ['br-en','us','de-en'])."""
     browser, ctx = await new_context(playwright)
     page = await ctx.new_page()
-    ok = await safe_goto(
-        page,
-        "https://www.spotify.com/select-your-country-region/",
-        timeout=70000,
-    )
+    ok = await safe_goto(page, "https://www.spotify.com/select-your-country-region/", timeout=70000)
     result = []
     if ok:
         links = await page.eval_on_selector_all(
@@ -796,9 +301,15 @@ async def fetch_markets(playwright):
         pass
     return result
 
+def pick_after_line(p_texts) -> str:
+    # keep your old behaviour, but it’s optional
+    for pt in (p_texts or [])[:6]:
+        en = translate_text_cached(_clean_spaces(pt))
+        if looks_monthly_en(en) and AFTER_RE.search(en):
+            return pt
+    return ""
 
 # ---------- Scrape one market ----------
-
 async def scrape_country(locale, playwright, semaphore):
     async with semaphore:
         browser, ctx = await new_context(playwright)
@@ -811,9 +322,7 @@ async def scrape_country(locale, playwright, semaphore):
         ok = await safe_goto(page, url, timeout=70000)
         if ok:
             await page.wait_for_timeout(1200)
-            cards = await page.query_selector_all(
-                "section:has(h3), div:has(h3), article:has(h3)"
-            )
+            cards = await page.query_selector_all("section:has(h3), div:has(h3), article:has(h3)")
 
             seen = set()
             for card in cards:
@@ -833,8 +342,9 @@ async def scrape_country(locale, playwright, semaphore):
                         continue
                     seen.add(key)
 
+                    # Grab p texts (for Trial Info display)
                     p_tags = await card.query_selector_all("p")
-                    p_texts, full_text = [], ""
+                    p_texts = []
                     for p in p_tags:
                         try:
                             t = await p.inner_text()
@@ -842,34 +352,38 @@ async def scrape_country(locale, playwright, semaphore):
                                 p_texts.append(t)
                         except Exception:
                             pass
+
+                    # IMPORTANT: use textContent to include hidden/legal "then X/month"
                     try:
-                        full_text = await card.inner_text()
+                        full_text_all = await card.evaluate("(el) => el.textContent || ''")
                     except Exception:
-                        full_text = " ".join(p_texts)
+                        full_text_all = " ".join(p_texts)
 
-                    # ---------- Smart price picking (recurring, not trial) ----------
-                    amount, ctx_for_currency = pick_recurring_amount_from_card(
-                        full_text, a2
-                    )
+                    try:
+                        full_text_visible = await card.inner_text()
+                    except Exception:
+                        full_text_visible = " ".join(p_texts)
 
-                    # Fallback: if the heuristic fails for some weird layout, use old logic.
+                    # ---------- FIX: choose recurring price from currency-attached tokens ----------
+                    price_display, amount = pick_recurring_price_token(full_text_all)
+
+                    # fallback to visible text if needed
                     if not amount:
-                        price_line = choose_price_line(p_texts, a2)
-                        ctx_for_currency = price_line
-                        amount = extract_amount_number(price_line)
+                        price_display, amount = pick_recurring_price_token(full_text_visible)
 
-                    currency, _ = detect_currency_in_text(ctx_for_currency, a2)
-                    if not currency:
-                        currency, _ = detect_currency_from_hints(
-                            [ctx_for_currency, " ".join(p_texts), title],
-                            a2,
-                        )
+                    # still nothing? last resort: try first price-like token from p_texts join
+                    if not amount:
+                        price_display, amount = pick_recurring_price_token(" ".join(p_texts))
 
-                    # Trial (what user sees on top), After-trial (if present)
+                    # Trial line shown to user (keep simple)
                     trial = p_texts[0] if p_texts else ""
+
+                    # Optional: a line that says "then/after"
                     after = pick_after_line(p_texts)
 
                     if amount:
+                        currency = detect_currency_in_text(price_display, a2) or default_currency_for_alpha2(a2)
+
                         plans.append(
                             {
                                 "Country Code": locale,
@@ -896,17 +410,7 @@ async def scrape_country(locale, playwright, semaphore):
             pass
         return plans
 
-
 # ---------- Master runner ----------
-
-def _display_name_from_loc(loc):
-    base = loc.split("-")[0]
-    try:
-        return pycountry.countries.lookup(base).name
-    except Exception:
-        return base.upper()
-
-
 async def run():
     async with async_playwright() as pw:
         log("🔎 Discovering markets from directory…")
@@ -921,22 +425,15 @@ async def run():
             picked = []
             for loc in markets:
                 base = loc.split("-")[0]
-                if base in desired_bases and (
-                    loc.endswith("-en")
-                    or base not in [p.split("-")[0] for p in picked]
-                ):
+                if base in desired_bases and (loc.endswith("-en") or base not in [p.split("-")[0] for p in picked]):
                     picked.append(loc)
             for code in TEST_MARKETS:
-                if code not in picked and code.split("-")[0] not in [
-                    p.split("-")[0] for p in picked
-                ]:
+                if code not in picked and code.split("-")[0] not in [p.split("-")[0] for p in picked]:
                     picked.append(code)
             markets = picked
             log(f"🧪 Test mode: scraping {len(markets)} markets: {markets}")
         else:
-            log(
-                f"✅ Found {len(markets)} markets (English preferred where available)."
-            )
+            log(f"✅ Found {len(markets)} markets (English preferred where available).")
 
         sem = asyncio.Semaphore(MAX_CONCURRENCY)
         tasks = [scrape_country(loc, pw, sem) for loc in markets]
@@ -951,20 +448,13 @@ async def run():
         pbar.close()
 
         if not all_plans:
-            log(
-                "❌ No plan cards scraped. Try again (Colab / cloud IPs get throttled sometimes)."
-            )
+            log("❌ No plan cards scraped. Try again.")
             return
 
         df = pd.DataFrame(all_plans)
         df["Numerical Price"] = pd.to_numeric(df["Price"], errors="coerce")
-        df.sort_values(
-            ["Alpha-2", "Standard Plan Name", "Plan Name"],
-            inplace=True,
-            kind="stable",
-        )
+        df.sort_values(["Alpha-2", "Standard Plan Name", "Plan Name"], inplace=True, kind="stable")
 
-        # --- Reorder and rename columns ---
         desired_columns = [
             "Country Standard Name",
             "Alpha-2",
@@ -984,72 +474,38 @@ async def run():
 
         df.rename(
             columns={
-                "Country Standard Name": "Country Standard Name",
                 "Alpha-2": "Country Alpha-2",
                 "Alpha-3": "Country Alpha-3",
-                "Country Code": "Country Code",
                 "Country Name (resolved)": "Country Name",
-                "Standard Plan Name": "Standard Plan Name",
-                "Plan Name": "Plan Name",
-                "Trial Info": "Trial Info",
-                "Currency": "Currency",
-                "Price": "Price",
-                "Billing Frequency": "Billing Frequency",
-                "Price After Trial": "Price After Trial",
-                "URL": "URL",
             },
             inplace=True,
         )
 
-        # --- Save files ---
         base = f"spotify_cleaned_playwright{'_TEST' if TEST_MODE else ''}"
         csv_out = f"{base}.csv"
         xlsx_out = f"{base}.xlsx"
 
-        # Write CSV (UTF-8) and XLSX
         df.to_csv(csv_out, index=False, encoding="utf-8")
         with pd.ExcelWriter(xlsx_out, engine="openpyxl") as w:
             df.to_excel(w, index=False)
 
-        log(
-            f"\n🎉 Done! Saved {csv_out} and {xlsx_out} | "
-            f"Rows: {len(df)} Countries: {df['Country Alpha-2'].nunique()}"
-        )
+        log(f"\n🎉 Done! Saved {csv_out} and {xlsx_out} | Rows: {len(df)} Countries: {df['Country Alpha-2'].nunique()}")
 
-        # Return the absolute path to the Excel file for the caller (Streamlit)
         from pathlib import Path
-
         return str(Path(xlsx_out).resolve())
-
 
 # ---------------------------------------------------------------------------
 # Streamlit wrapper
 # ---------------------------------------------------------------------------
-
 async def _run_spotify_async(test_mode: bool = True, test_countries=None) -> str:
-    """
-    Internal async runner. Uses global TEST_MODE and TEST_MARKETS
-    and the async `run()` defined above.
-    """
     global TEST_MODE, TEST_MARKETS
-
     TEST_MODE = bool(test_mode)
 
-    # If the UI passed a list of ISO codes in Test mode, use their lowercase
-    # versions as TEST_MARKETS.
     if TEST_MODE and test_countries:
         TEST_MARKETS = [c.lower() for c in test_countries]
         print(f"[SPOTIFY] UI-driven TEST_MARKETS: {TEST_MARKETS}")
 
-    # run() already returns the Excel path
     return await run()
 
-
 def run_spotify_scraper(test_mode: bool = True, test_countries=None) -> str:
-    """
-    Public function used by the Streamlit app.
-    Returns the absolute path to the Spotify Excel file.
-    """
-    return asyncio.run(
-        _run_spotify_async(test_mode=test_mode, test_countries=test_countries)
-    )
+    return asyncio.run(_run_spotify_async(test_mode=test_mode, test_countries=test_countries))
