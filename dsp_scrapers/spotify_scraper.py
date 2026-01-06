@@ -1,14 +1,12 @@
-# dsp_scrapers/spotify_scraper.py
-# ------------------------------------------------------------
-# LOGIC = EXACT COPY OF YOUR COLAB SCRIPT
-# Only changes:
-#   - no nest_asyncio / google.colab.files
-#   - run() returns Excel path instead of downloading
-#   - added run_spotify_scraper(test_mode, test_countries) wrapper
-# ------------------------------------------------------------
+# ---------- FULL SCRIPT (standalone / app) ----------
+# This is your Colab script, minimally adapted:
+# - no nest_asyncio
+# - google.colab.files is optional
+# - run() returns xlsx path
+# - run_spotify_scraper() wrapper for the app
+# ----------------------------------------------------
 
 import asyncio, re, pandas as pd, functools
-from pathlib import Path
 from playwright.async_api import async_playwright
 import pycountry
 from difflib import get_close_matches
@@ -17,6 +15,12 @@ from forex_python.converter import CurrencyCodes
 from tqdm.auto import tqdm
 from datetime import date
 from babel.numbers import get_territory_currencies
+
+# Colab-only import guarded so script works outside Colab
+try:
+    from google.colab import files
+except Exception:
+    files = None
 
 # ---------- Config ----------
 STANDARD_PLAN_NAMES = [
@@ -38,7 +42,7 @@ HEADLESS = True
 
 # ---- Test mode ----
 TEST_MODE = True
-TEST_MARKETS = ['ae', 'fr', 'de', 'cn']
+TEST_MARKETS = ['ae','fr','de','cn']
 
 # ---------- Utilities ----------
 def log(msg): print(msg, flush=True)
@@ -102,6 +106,7 @@ def _clean_spaces(s):
     return (s or "").replace("\xa0"," ").strip()
 
 # ---- Strong tokens (explicit, unambiguous) ----
+# These are "symbol → 3-letter currency" mappings.
 STRONG_TOKENS = [
     # Explicit US dollar markers
     (r"(?i)US\$", "USD"),   # US$4.99, US$ 4.99
@@ -210,7 +215,7 @@ HARDCODE_FALLBACKS = {
     "BH": "BHD", "OM": "OMR",
     "IL": "ILS",
     "EG": "EGP", "MA": "MAD", "TN": "TND", "DZ": "DZD",
-    "IQ": "IQD",   # Iraq (important for your screenshot)
+    "IQ": "IQD",   # Iraq
 
     # Africa
     "ZA": "ZAR", "NG": "NGN", "GH": "GHS",
@@ -255,12 +260,6 @@ KNOWN_ISO = set(HARDCODE_FALLBACKS.values()) | {
 def detect_currency_in_text(text, alpha2):
     """
     Find the currency used in a line of text.
-
-    Priority:
-      1) Strong symbol / token (STRONG_TOKENS)  → ISO from symbol
-      2) 3-letter ISO codes near a number       → that ISO
-      3) Ambiguous symbols ($, kr, Rs, ₨)       → country default
-      4) Nothing found                          → country default
     """
     s = _clean_spaces(text)
     if not s:
@@ -674,22 +673,22 @@ async def run():
 
         log(f"\n🎉 Done! Saved {csv_out} and {xlsx_out} | Rows: {len(df)} Countries: {df['Country Alpha-2'].nunique()}")
 
-        # **NEW**: return absolute path so the app can load it
-        return str(Path(xlsx_out).resolve())
+        # In Colab this will still download; outside Colab files is None → skipped
+        if files is not None:
+            files.download(xlsx_out)
+            files.download(csv_out)
 
-# ---------------------------------------------------------------------------
-# Streamlit wrapper for the app
-# ---------------------------------------------------------------------------
+        # NEW: return Excel path so caller (app / CLI) can use it
+        return xlsx_out
+
+# -------------------------------------------------------------------
+# Streamlit / external entry point
+# -------------------------------------------------------------------
 async def _run_spotify_async(test_mode: bool = True, test_countries=None) -> str | None:
-    """
-    Internal async runner. Uses the exact Colab logic above.
-    """
     global TEST_MODE, TEST_MARKETS
-
     TEST_MODE = bool(test_mode)
 
     if TEST_MODE and test_countries:
-        # Streamlit passes ISO alpha-2 codes like ["FR","DE","AE"]
         TEST_MARKETS = [c.strip().lower() for c in test_countries if c and len(c.strip()) == 2]
         print(f"[SPOTIFY] UI-driven TEST_MARKETS: {TEST_MARKETS}", flush=True)
 
@@ -697,20 +696,22 @@ async def _run_spotify_async(test_mode: bool = True, test_countries=None) -> str
 
 def run_spotify_scraper(test_mode: bool = True, test_countries=None) -> str | None:
     """
-    Public entry point used by dsp_scrapers.run_scraper() from the Streamlit app.
-    Returns the absolute path to the Excel file.
+    Public function for the app.
+    Returns the Excel filename (relative to current working dir).
     """
     try:
         return asyncio.run(_run_spotify_async(test_mode=test_mode, test_countries=test_countries))
     except RuntimeError as e:
-        # Fallback if we're inside an already-running event loop
-        if "asyncio.run() cannot be called from a running event loop" not in str(e):
+        # If already in an event loop (e.g. Streamlit), fall back
+        if "asyncio.run()" not in str(e):
             raise
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(_run_spotify_async(test_mode=test_mode, test_countries=test_countries))
 
-
+# -------------------------------------------------------------------
+# CLI testing: run this file directly to test outside the app
+# -------------------------------------------------------------------
 if __name__ == "__main__":
-    # Simple CLI sanity check
-    path = run_spotify_scraper(test_mode=True, test_countries=["FR", "DE", "AE", "CN"])
+    # You can tweak these or add argparse if you want
+    path = run_spotify_scraper(test_mode=True, test_countries=['ae','fr','de','cn'])
     print("Output written to:", path)
