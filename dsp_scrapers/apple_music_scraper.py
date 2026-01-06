@@ -1089,42 +1089,61 @@ def run_scraper(country_codes_override=None):
 
 
 
+from pathlib import Path
+
 def run_apple_music_scraper(test_mode: bool = True, test_countries=None) -> str | None:
     """
     Entry point used by the Streamlit app.
 
-    - In test_mode, respects `test_countries` by updating TEST_COUNTRIES and
-      then calling `run_scraper()` exactly like the CLI entrypoint.
-    - In full mode, ignores `test_countries` and runs a global scrape.
-    - Returns an absolute path to the Excel file, or None if nothing was written.
+    - In test_mode, honours `test_countries` by passing them into run_scraper.
+    - In full mode, ignores `test_countries` and scrapes all countries.
+    - Returns the absolute path to the Excel file, or None if nothing was written.
     """
     global TEST_MODE, TEST_COUNTRIES
     TEST_MODE = bool(test_mode)
 
-    # Mirror CLI behaviour: TEST_COUNTRIES controls the list when TEST_MODE is True.
+    country_override = None
     if TEST_MODE and test_countries:
         TEST_COUNTRIES = [
             c.strip().upper()
             for c in test_countries
             if c and len(c.strip()) == 2
         ]
-        print(f"[APPLE MUSIC] UI-driven TEST_COUNTRIES: {TEST_COUNTRIES}")
+        country_override = TEST_COUNTRIES
+        print(f"[APPLE MUSIC] UI-driven test countries: {TEST_COUNTRIES}")
 
     start = time.time()
-    # IMPORTANT: no country_codes_override here – behave like CLI
-    out_name = run_scraper()
+    out_name = run_scraper(country_codes_override=country_override)
     print(f"[APPLE MUSIC] Finished in {round(time.time() - start, 2)}s")
 
     if not out_name:
-        # run_scraper() returns None when it scraped zero rows
         return None
 
-    # App expects an absolute path, just like Spotify/Disney wrappers
     return str(Path(out_name).resolve())
 
 
 
 if __name__ == "__main__":
-    start = time.time()
-    run_scraper()
-    print(f"⏱️ Finished in {round(time.time() - start, 2)}s")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Apple Music scraper CLI")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run full scrape (all countries) instead of test mode.",
+    )
+    parser.add_argument(
+        "--countries",
+        nargs="*",
+        help="Optional list of ISO alpha-2 country codes for test mode (e.g. BR FR IN).",
+    )
+    args = parser.parse_args()
+
+    test_mode = not args.full
+    test_countries = args.countries if test_mode else None
+
+    path = run_apple_music_scraper(
+        test_mode=test_mode,
+        test_countries=test_countries,
+    )
+    print(f"Output written to: {path}")
