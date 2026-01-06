@@ -1,12 +1,16 @@
-# ---------- FULL SCRIPT (standalone / app) ----------
-# This is your Colab script, minimally adapted:
-# - no nest_asyncio
-# - google.colab.files is optional
-# - run() returns xlsx path
-# - run_spotify_scraper() wrapper for the app
-# ----------------------------------------------------
+# spotify_scraper_playwright.py
+# -------------------------------------------------------------------
+# This is your Colab Spotify scraper, adapted for:
+#   - normal Python environments (no Colab / nest_asyncio / files.download)
+#   - use from the Streamlit app via run_spotify_scraper()
+#
+# CORE LOGIC (parsing, heuristics, etc.) IS IDENTICAL TO YOUR SCRIPT.
+# Only I/O / wrappers / CLI are different.
+# -------------------------------------------------------------------
 
 import asyncio, re, pandas as pd, functools
+from pathlib import Path
+
 from playwright.async_api import async_playwright
 import pycountry
 from difflib import get_close_matches
@@ -15,12 +19,6 @@ from forex_python.converter import CurrencyCodes
 from tqdm.auto import tqdm
 from datetime import date
 from babel.numbers import get_territory_currencies
-
-# Colab-only import guarded so script works outside Colab
-try:
-    from google.colab import files
-except Exception:
-    files = None
 
 # ---------- Config ----------
 STANDARD_PLAN_NAMES = [
@@ -42,7 +40,7 @@ HEADLESS = True
 
 # ---- Test mode ----
 TEST_MODE = True
-TEST_MARKETS = ['ae','fr','de','cn']
+TEST_MARKETS = ['ae', 'fr', 'de', 'cn']
 
 # ---------- Utilities ----------
 def log(msg): print(msg, flush=True)
@@ -51,7 +49,7 @@ def log(msg): print(msg, flush=True)
 def translate_text_cached(text):
     try:
         return translator.translate(text or "", dest="en").text.lower()
-    except:
+    except Exception:
         return (text or "").lower()
 
 def normalize_plan_name(name):
@@ -93,7 +91,8 @@ def normalize_plan_name(name):
 
 def is_generic_trial(text):
     text = (text or "").strip()
-    if not text: return False
+    if not text:
+        return False
     translated = translate_text_cached(text)
     PROMO = [
         "go premium","control of your music","cancel anytime","no commitment",
@@ -103,10 +102,11 @@ def is_generic_trial(text):
     return sum(p in translated for p in PROMO) > 1
 
 def _clean_spaces(s):
-    return (s or "").replace("\xa0"," ").strip()
+    return (s or "").replace("\xa0", " ").strip()
 
 # ---- Strong tokens (explicit, unambiguous) ----
 # These are "symbol → 3-letter currency" mappings.
+# Anything that matches here wins over country defaults.
 STRONG_TOKENS = [
     # Explicit US dollar markers
     (r"(?i)US\$", "USD"),   # US$4.99, US$ 4.99
@@ -260,6 +260,12 @@ KNOWN_ISO = set(HARDCODE_FALLBACKS.values()) | {
 def detect_currency_in_text(text, alpha2):
     """
     Find the currency used in a line of text.
+
+    Priority:
+      1) Strong symbol / token (STRONG_TOKENS)  → ISO from symbol
+      2) 3-letter ISO codes near a number       → that ISO
+      3) Ambiguous symbols ($, kr, Rs, ₨)       → country default
+      4) Nothing found                          → country default
     """
     s = _clean_spaces(text)
     if not s:
@@ -290,20 +296,19 @@ def detect_currency_in_text(text, alpha2):
     # 4) Territory default fallback
     return default_currency_for_alpha2(alpha2), "territory_default"
 
-
 def _normalize_number(p):
     p = (p or "").replace(" ", "")
     dm = re.search(r'([.,])(\d{1,2})$', p)
     if dm:
         frac = dm.group(2)
-        base = p[:-len(dm.group(0))].replace(".","").replace(",","")
+        base = p[:-len(dm.group(0))].replace(".", "").replace(",", "")
         try:
             return str(float(base + "." + frac))
-        except:
+        except Exception:
             return ""
     try:
-        return str(float(p.replace(".","").replace(",","")))
-    except:
+        return str(float(p.replace(".", "").replace(",", "")))
+    except Exception:
         return ""
 
 # ------------ PRICE PARSING ------------
@@ -371,7 +376,7 @@ def extract_amount_number(text):
     for m in re.finditer(r"\d+(?:[.,]\d+)?", tr):
         num = m.group(0)
         end = m.span()[1]
-        tail = tr[end : end + 8]
+        tail = tr[end: end + 8]
         if re.search(r"^\s*[/\-]?\s*(?:hour|hours|hr|hrs|minute|min)\b", tail, re.I):
             continue
         candidates.append(num)
@@ -421,12 +426,13 @@ def get_country_info(locale_code):
     try:
         c = pycountry.countries.lookup(base)
         return c.name, c.alpha_2, c.alpha_3
-    except:
+    except Exception:
         return "Unknown", base.upper(), base.upper()
 
 def detect_currency_from_hints(texts, alpha2):
     for t in texts:
-        if not t: continue
+        if not t:
+            continue
         cur, src = detect_currency_in_text(t, alpha2)
         if cur:
             return cur, src
@@ -455,7 +461,8 @@ async def new_context(playwright):
         else:
             await route.continue_()
     await ctx.route("**/*", route_block)
-    await ctx.add_cookies([{"name":"sp_lang","value":"en","domain":".spotify.com","path":"/"}])
+    await ctx.add_cookies([{"name": "sp_lang", "value": "en",
+                            "domain": ".spotify.com", "path": "/"}])
     return browser, ctx
 
 async def safe_goto(page, url, timeout=60000):
@@ -464,8 +471,9 @@ async def safe_goto(page, url, timeout=60000):
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
             return True
         except Exception:
-            if i == 2: return False
-            await asyncio.sleep(1.0 + i*0.6)
+            if i == 2:
+                return False
+            await asyncio.sleep(1.0 + i * 0.6)
     return False
 
 # ---------- Market discovery ----------
@@ -482,7 +490,8 @@ async def fetch_markets(playwright):
         )
         base_choice = {}
         for href in links or []:
-            if not href: continue
+            if not href:
+                continue
             code = href.strip("/").split("/")[0]
             if not re.fullmatch(r"[a-z]{2}(?:-[a-z]{2})?", code):
                 continue
@@ -492,7 +501,7 @@ async def fetch_markets(playwright):
         result = list(base_choice.values())
     try:
         await browser.close()
-    except:
+    except Exception:
         pass
     return result
 
@@ -516,14 +525,17 @@ async def scrape_country(locale, playwright, semaphore):
                 try:
                     h3 = await card.query_selector("h3")
                     title = await (h3.inner_text() if h3 else "Unknown")
-                    if not title.strip(): continue
+                    if not title.strip():
+                        continue
 
                     std = normalize_plan_name(title)
-                    if std == "Other": continue
+                    if std == "Other":
+                        continue
 
                     title_key = re.sub(r'[^a-z0-9]+', ' ', title.lower()).strip()
                     key = (std, title_key)
-                    if key in seen: continue
+                    if key in seen:
+                        continue
                     seen.add(key)
 
                     p_tags = await card.query_selector_all("p")
@@ -531,12 +543,13 @@ async def scrape_country(locale, playwright, semaphore):
                     for p in p_tags:
                         try:
                             t = await p.inner_text()
-                            if t: p_texts.append(t)
-                        except:
+                            if t:
+                                p_texts.append(t)
+                        except Exception:
                             pass
                     try:
                         full_text = await card.inner_text()
-                    except:
+                    except Exception:
                         full_text = " ".join(p_texts)
 
                     # ---------- Smart price picking ----------
@@ -544,7 +557,9 @@ async def scrape_country(locale, playwright, semaphore):
                     amount = extract_amount_number(price_line)
                     currency, _ = detect_currency_in_text(price_line, a2)
                     if not currency:
-                        currency, _ = detect_currency_from_hints([price_line, " ".join(p_texts), title], a2)
+                        currency, _ = detect_currency_from_hints(
+                            [price_line, " ".join(p_texts), title], a2
+                        )
 
                     # Trial (what user sees on top), After-trial (if present)
                     trial = p_texts[0] if p_texts else ""
@@ -571,7 +586,7 @@ async def scrape_country(locale, playwright, semaphore):
 
         try:
             await browser.close()
-        except:
+        except Exception:
             pass
         return plans
 
@@ -580,7 +595,7 @@ def _display_name_from_loc(loc):
     base = loc.split("-")[0]
     try:
         return pycountry.countries.lookup(base).name
-    except:
+    except Exception:
         return base.upper()
 
 async def run():
@@ -591,13 +606,18 @@ async def run():
             log("❌ Couldn’t resolve markets (Spotify blocked/empty). Re-run shortly.")
             return None
 
+        global TEST_MODE, TEST_MARKETS
+
         if TEST_MODE:
             desired = set(TEST_MARKETS)
             desired_bases = {c.split("-")[0] for c in desired}
             picked = []
             for loc in markets:
                 base = loc.split("-")[0]
-                if base in desired_bases and (loc.endswith("-en") or base not in [p.split("-")[0] for p in picked]):
+                if base in desired_bases and (
+                    loc.endswith("-en") or
+                    base not in [p.split("-")[0] for p in picked]
+                ):
                     picked.append(loc)
             for code in TEST_MARKETS:
                 if code not in picked and code.split("-")[0] not in [p.split("-")[0] for p in picked]:
@@ -614,7 +634,8 @@ async def run():
         pbar = tqdm(total=len(tasks), desc="Scraping /premium pages", unit="market")
         for fut in asyncio.as_completed(tasks):
             res = await fut
-            if res: all_plans.extend(res)
+            if res:
+                all_plans.extend(res)
             pbar.update(1)
         pbar.close()
 
@@ -624,7 +645,8 @@ async def run():
 
         df = pd.DataFrame(all_plans)
         df["Numerical Price"] = pd.to_numeric(df["Price"], errors="coerce")
-        df.sort_values(["Alpha-2", "Standard Plan Name", "Plan Name"], inplace=True, kind="stable")
+        df.sort_values(["Alpha-2", "Standard Plan Name", "Plan Name"],
+                       inplace=True, kind="stable")
 
         # --- Reorder and rename columns ---
         desired_columns = [
@@ -671,47 +693,72 @@ async def run():
         with pd.ExcelWriter(xlsx_out, engine="openpyxl") as w:
             df.to_excel(w, index=False)
 
-        log(f"\n🎉 Done! Saved {csv_out} and {xlsx_out} | Rows: {len(df)} Countries: {df['Country Alpha-2'].nunique()}")
+        log(
+            f"\n🎉 Done! Saved {csv_out} and {xlsx_out} | "
+            f"Rows: {len(df)} Countries: {df['Country Alpha-2'].nunique()}"
+        )
 
-        # In Colab this will still download; outside Colab files is None → skipped
-        if files is not None:
-            files.download(xlsx_out)
-            files.download(csv_out)
-
-        # NEW: return Excel path so caller (app / CLI) can use it
-        return xlsx_out
+        # IMPORTANT CHANGE vs Colab: return the XLSX absolute path
+        return str(Path(xlsx_out).resolve())
 
 # -------------------------------------------------------------------
-# Streamlit / external entry point
+# Async + sync wrappers for app use
 # -------------------------------------------------------------------
 async def _run_spotify_async(test_mode: bool = True, test_countries=None) -> str | None:
+    """
+    Internal async runner. Mirrors Colab logic, but returns XLSX path.
+
+    - test_mode=True => use TEST_MARKETS (optionally overridden by test_countries)
+    - test_mode=False => full run over all Spotify markets
+    """
     global TEST_MODE, TEST_MARKETS
+
     TEST_MODE = bool(test_mode)
 
     if TEST_MODE and test_countries:
-        TEST_MARKETS = [c.strip().lower() for c in test_countries if c and len(c.strip()) == 2]
-        print(f"[SPOTIFY] UI-driven TEST_MARKETS: {TEST_MARKETS}", flush=True)
+        TEST_MARKETS = [c.lower() for c in test_countries]
+        print(f"[SPOTIFY] UI-driven TEST_MARKETS: {TEST_MARKETS}")
 
     return await run()
 
 def run_spotify_scraper(test_mode: bool = True, test_countries=None) -> str | None:
     """
-    Public function for the app.
-    Returns the Excel filename (relative to current working dir).
+    Public function used by the Streamlit app.
+    Returns the absolute path to the Spotify Excel file, or None on failure.
+
+    Example from app:
+        path = run_spotify_scraper(
+            test_mode=True,
+            test_countries=['FR', 'DE']
+        )
     """
-    try:
-        return asyncio.run(_run_spotify_async(test_mode=test_mode, test_countries=test_countries))
-    except RuntimeError as e:
-        # If already in an event loop (e.g. Streamlit), fall back
-        if "asyncio.run()" not in str(e):
-            raise
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(_run_spotify_async(test_mode=test_mode, test_countries=test_countries))
+    return asyncio.run(_run_spotify_async(test_mode=test_mode, test_countries=test_countries))
 
 # -------------------------------------------------------------------
-# CLI testing: run this file directly to test outside the app
+# CLI entry point so you can test outside the app
 # -------------------------------------------------------------------
 if __name__ == "__main__":
-    # You can tweak these or add argparse if you want
-    path = run_spotify_scraper(test_mode=True, test_countries=['ae','fr','de','cn'])
-    print("Output written to:", path)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Spotify Premium scraper (Playwright)")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run full scrape (all markets). Default: test mode like Colab.",
+    )
+    parser.add_argument(
+        "--countries",
+        nargs="*",
+        help="Optional list of market codes for test mode, e.g. AE FR DE CN.",
+    )
+
+    args = parser.parse_args()
+
+    test_mode = not args.full
+    test_countries = args.countries if test_mode and args.countries else None
+
+    out_path = run_spotify_scraper(
+        test_mode=test_mode,
+        test_countries=test_countries,
+    )
+    print(f"\nOutput written to: {out_path}")
