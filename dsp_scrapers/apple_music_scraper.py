@@ -786,15 +786,6 @@ def banner_individual_row(alpha2: str, country_name: str, meta=None):
         "Price Display": disp,
         "Price Value": val,
         "Source": "music.apple.com banner (fallback)",
-        "Redirected": meta.get("Redirected", False) if meta else False,
-        "Redirected To": meta.get("Redirected To", "") if meta else "",
-        "Redirect Reason": meta.get("Redirect Reason", "") if meta else "",
-        "Apple URL": (
-            meta.get("Apple URL", final_url or f"https://music.apple.com/{alpha2.lower()}/new")
-            if meta
-            else (final_url or f"https://music.apple.com/{alpha2.lower()}/new")
-        ),
-        "Has Apple Music Page": meta.get("Has Apple Music Page", True) if meta else True,
     }
     return [row]
 
