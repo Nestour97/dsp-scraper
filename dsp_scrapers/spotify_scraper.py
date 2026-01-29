@@ -396,11 +396,13 @@ def choose_price_line(p_texts, alpha2: str) -> str:
     """Pick the most reliable price line from the <p> lines in a card.
 
     Strategy:
-    1) If translation works: prefer 'monthly' + 'after/then' (your original logic).
-    2) If that fails (e.g. translation is broken), look at all price-like lines
-       and pick the one with the highest positive amount. This avoids choosing
-       '0 € pour 1 mois' when a non-zero recurring price is also present.
+    1) If translation works: prefer 'monthly' + 'after/then' (original logic).
+    2) If that fails (e.g. translation is broken or returns the source language),
+       look at all price-like lines in the card and pick the one with the
+       highest positive amount. This avoids choosing '0 € pour 1 mois' when a
+       non-zero recurring price is also present.
     """
+    # Normalise + translate once
     lines = [(_clean_spaces(x), translate_text_cached(_clean_spaces(x)))
              for x in (p_texts or []) if x and x.strip()]
     if not lines:
@@ -408,17 +410,17 @@ def choose_price_line(p_texts, alpha2: str) -> str:
 
     # --- Original behaviour: use English markers when available ---
 
-    # 1) monthly + 'after/thereafter/then'
+    # 1) Monthly + 'after/thereafter/then'
     for raw, en in lines[:4]:
         if looks_monthly_en(en) and AFTER_RE.search(en):
             return raw
 
-    # 2) monthly but NOT 'for N months' (avoid 0-for-X-months promos)
+    # 2) Monthly but NOT 'for N months' (avoid $0 promos)
     for raw, en in lines[:4]:
         if looks_monthly_en(en) and not FOR_N_MONTHS_RE.search(en):
             return raw
 
-    # --- New robust fallback: choose the largest positive amount line ---
+    # --- Robust fallback: work purely from numbers + currency, no translation ---
 
     candidates = []
     for raw, _en in lines[:4]:
@@ -437,22 +439,22 @@ def choose_price_line(p_texts, alpha2: str) -> str:
         candidates.append((amt_val, raw))
 
     if candidates:
-        # Prefer positive amounts; if all are <= 0, just take the first candidate
+        # Prefer positive amounts; among them take the highest
         positive = [c for c in candidates if c[0] > 0]
         if positive:
-            _, best_raw = max(positive, key=lambda x: x[0])
-            return best_raw
-        _, best_raw = candidates[0]
-        return best_raw
+            _, raw = max(positive, key=lambda x: x[0])
+            return raw
+        # If all amounts are zero/negative, just return the first candidate
+        return candidates[0][1]
 
-    # --- Final fallback (very rare): your original step 3 + first line ---
-
+    # Final conservative fallback: original step (any currency+number) then first line
     for raw, _en in lines[:4]:
         cur, _ = detect_currency_in_text(raw, alpha2)
         if cur and re.search(r"\d", raw):
             return raw
 
     return lines[0][0]
+
 
 
 def pick_after_line(p_texts) -> str:
