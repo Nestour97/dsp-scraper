@@ -393,26 +393,67 @@ def looks_monthly_en(s_en: str) -> bool:
     return bool(MONTHY_RE.search(s_en))
 
 def choose_price_line(p_texts, alpha2: str) -> str:
-    """Pick the most reliable price line from the <p> lines in a card."""
+    """Pick the most reliable price line from the <p> lines in a card.
+
+    Strategy:
+    1) If translation works: prefer 'monthly' + 'after/then' (your original logic).
+    2) If that fails (e.g. translation is broken), look at all price-like lines
+       and pick the one with the highest positive amount. This avoids choosing
+       '0 € pour 1 mois' when a non-zero recurring price is also present.
+    """
     lines = [(_clean_spaces(x), translate_text_cached(_clean_spaces(x)))
              for x in (p_texts or []) if x and x.strip()]
     if not lines:
         return ""
-    # 1) Monthly + 'after/thereafter' (real monthly after promo)
+
+    # --- Original behaviour: use English markers when available ---
+
+    # 1) monthly + 'after/thereafter/then'
     for raw, en in lines[:4]:
         if looks_monthly_en(en) and AFTER_RE.search(en):
             return raw
-    # 2) Monthly but NOT 'for N months' (avoid $0 promos)
+
+    # 2) monthly but NOT 'for N months' (avoid 0-for-X-months promos)
     for raw, en in lines[:4]:
         if looks_monthly_en(en) and not FOR_N_MONTHS_RE.search(en):
             return raw
-    # 3) Any line with currency and a number
-    for raw, en in lines[:4]:
+
+    # --- New robust fallback: choose the largest positive amount line ---
+
+    candidates = []
+    for raw, _en in lines[:4]:
+        if not raw:
+            continue
+        cur, _ = detect_currency_in_text(raw, alpha2)
+        if not cur:
+            continue
+        amt_str = extract_amount_number(raw)
+        if not amt_str:
+            continue
+        try:
+            amt_val = float(str(amt_str).replace(",", "."))
+        except Exception:
+            continue
+        candidates.append((amt_val, raw))
+
+    if candidates:
+        # Prefer positive amounts; if all are <= 0, just take the first candidate
+        positive = [c for c in candidates if c[0] > 0]
+        if positive:
+            _, best_raw = max(positive, key=lambda x: x[0])
+            return best_raw
+        _, best_raw = candidates[0]
+        return best_raw
+
+    # --- Final fallback (very rare): your original step 3 + first line ---
+
+    for raw, _en in lines[:4]:
         cur, _ = detect_currency_in_text(raw, alpha2)
         if cur and re.search(r"\d", raw):
             return raw
-    # 4) Fallback: first <p>
+
     return lines[0][0]
+
 
 def pick_after_line(p_texts) -> str:
     for pt in p_texts[:4]:
