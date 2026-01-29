@@ -11,5 +11,6 @@ deep-translator
 unidecode
 streamlit-aggrid
 babel
-googletrans
+googletrans==4.0.0rc1
 forex_python
+
